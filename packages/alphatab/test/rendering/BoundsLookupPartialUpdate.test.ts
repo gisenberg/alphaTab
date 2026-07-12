@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Bar } from '@coderline/alphatab/model/Bar';
 import { Beat } from '@coderline/alphatab/model/Beat';
 import { MasterBar } from '@coderline/alphatab/model/MasterBar';
+import { Note } from '@coderline/alphatab/model/Note';
 import { Score } from '@coderline/alphatab/model/Score';
 import { Staff } from '@coderline/alphatab/model/Staff';
 import { Track } from '@coderline/alphatab/model/Track';
@@ -11,6 +12,7 @@ import { BeatBounds } from '@coderline/alphatab/rendering/utils/BeatBounds';
 import { Bounds } from '@coderline/alphatab/rendering/utils/Bounds';
 import { BoundsLookup } from '@coderline/alphatab/rendering/utils/BoundsLookup';
 import { MasterBarBounds } from '@coderline/alphatab/rendering/utils/MasterBarBounds';
+import { NoteBounds } from '@coderline/alphatab/rendering/utils/NoteBounds';
 import { StaffSystemBounds } from '@coderline/alphatab/rendering/utils/StaffSystemBounds';
 // Covers the partial-render preservation path: ScoreRenderer.render reuses an existing
 // BoundsLookup when renderHints.firstChangedMasterBar is set, VerticalLayoutBase prunes the
@@ -40,7 +42,9 @@ describe('BoundsLookupPartialUpdate', () => {
             const voice = new Voice();
             bar.addVoice(voice);
             for (let b = 0; b < beatsPerBar; b++) {
-                voice.addBeat(new Beat());
+                const beat = new Beat();
+                beat.addNote(new Note());
+                voice.addBeat(beat);
             }
         }
         return score;
@@ -77,6 +81,12 @@ describe('BoundsLookupPartialUpdate', () => {
                     beatBounds.beat = beat;
                     beatBounds.visualBounds = makeBounds(i * 100, systemStart * 200, 20, 100);
                     beatBounds.realBounds = makeBounds(i * 100, systemStart * 200, 20, 200);
+                    beatBounds.onNotesX = i * 100 + 5;
+                    beatBounds.notes = [];
+                    const noteBounds = new NoteBounds();
+                    noteBounds.note = beat.notes[0];
+                    noteBounds.noteHeadBounds = makeBounds(i * 100 + 5, systemStart * 200 + 10, 8, 12);
+                    beatBounds.addNote(noteBounds);
                     bb.addBeat(beatBounds);
                 }
             }
@@ -187,5 +197,23 @@ describe('BoundsLookupPartialUpdate', () => {
         // the newly registered system gets scaled exactly once
         expect(newSystem.isFinished).toBe(true);
         expect(newSystem.realBounds.w).toBe(2000);
+    });
+
+    it('round-trips worker bounds through compact typed arrays', () => {
+        const score = buildScore(12, 4);
+        const lookup = populateLookup(score, 3);
+
+        const compact = lookup.toCompact();
+        const restored = BoundsLookup.fromCompact(compact, score);
+
+        expect(compact.floats).toBeInstanceOf(Float32Array);
+        expect(compact.integers).toBeInstanceOf(Int32Array);
+        expect(restored.staffSystems.length).toBe(4);
+        expect(restored.findMasterBarByIndex(11)?.realBounds.x).toBe(1100);
+        const sourceBeat = score.tracks[0].staves[0].bars[11].voices[0].beats[0];
+        const restoredBeat = restored.findBeat(sourceBeat)!;
+        expect(restoredBeat.onNotesX).toBe(1105);
+        expect(restoredBeat.notes?.[0].note).toBe(sourceBeat.notes[0]);
+        expect(restoredBeat.notes?.[0].noteHeadBounds.w).toBe(8);
     });
 });

@@ -132,6 +132,15 @@ export interface IAlphaSynth {
     readonly currentPosition: PositionChangedEventArgs;
 
     /**
+     * Gets the monotonic transport position between coarse position events.
+     * This clock is shared by synthesized and backing-track playback modes.
+     */
+    readonly transportTimePosition: number;
+
+    /** Increments on seek, loop, stop, or another transport discontinuity. */
+    readonly transportGeneration: number;
+
+    /**
      * Gets or sets the range of the song that should be played. Set this to null
      * to play the whole song.
      */

@@ -8,6 +8,9 @@ import type { AudioExportChunk, AudioExportOptions } from '@coderline/alphatab/s
 import type { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
 import type { PlayerState } from '@coderline/alphatab/synth/PlayerState';
 import type { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
+import type { SynthOutputDiagnostics } from '@coderline/alphatab/synth/SynthOutputDiagnostics';
+import type { SharedSampleBufferDescriptor } from '@coderline/alphatab/platform/javascript/SharedSampleBuffer';
+import type { CompactBoundsLookup } from '@coderline/alphatab/rendering/utils/BoundsLookup';
 
 /**
  * @internal
@@ -23,7 +26,8 @@ export type IAlphaTabWorkerMessage =
     | { cmd: 'alphaTab.setWidth'; width: number }
     | {
           cmd: 'alphaTab.renderScore';
-          score: Map<string, unknown> | null;
+          compilationId: number;
+          score?: Map<string, unknown> | null;
           trackIndexes: number[] | null;
           fontSizes: Map<string, FontSizeDefinition>;
           renderHints: RenderHints | undefined;
@@ -33,14 +37,14 @@ export type IAlphaTabWorkerMessage =
     | { cmd: 'alphaTab.partialRenderFinished'; result: RenderFinishedEventArgs }
     | { cmd: 'alphaTab.partialLayoutFinished'; result: RenderFinishedEventArgs }
     | { cmd: 'alphaTab.renderFinished'; result: RenderFinishedEventArgs }
-    | { cmd: 'alphaTab.postRenderFinished'; boundsLookup: Map<string, unknown> | null }
+    | { cmd: 'alphaTab.postRenderFinished'; boundsLookup: CompactBoundsLookup | null }
     | { cmd: 'alphaTab.error'; error: Error };
 
 /**
  * @internal
  */
 export interface IAlphaTabWorker<T> {
-    postMessage(message: T): void;
+    postMessage(message: T, transfer?: Transferable[]): void;
     addEventListener(event: 'message', handler: (ev: MessageEvent<T>) => void): void;
     removeEventListener(event: 'message', handler: (ev: MessageEvent<T>) => void): void;
     terminate(): void;
@@ -49,8 +53,8 @@ export interface IAlphaTabWorker<T> {
 /**
  * @internal
  */
-export interface IAlphaTabWorkerGlobalScope<T> {    
-    postMessage(message: T): void;
+export interface IAlphaTabWorkerGlobalScope<T> {
+    postMessage(message: T, transfer?: Transferable[]): void;
     addEventListener(event: 'message', handler: (ev: MessageEvent<T>) => void): void;
     removeEventListener(event: 'message', handler: (ev: MessageEvent<T>) => void): void;
 }
@@ -61,7 +65,14 @@ export interface IAlphaTabWorkerGlobalScope<T> {
  */
 export type IAlphaSynthWorkerMessage =
     /* main -> worker */
-    | { cmd: 'alphaSynth.initialize'; sampleRate: number; logLevel: LogLevel; bufferTimeInMilliseconds: number }
+    | {
+          cmd: 'alphaSynth.initialize';
+          sampleRate: number;
+          logLevel: LogLevel;
+          bufferTimeInMilliseconds: number;
+          sharedSampleBuffer?: SharedSampleBufferDescriptor;
+      }
+    | { cmd: 'alphaSynth.output.attachWorkletPort'; port: MessagePort }
     | { cmd: 'alphaSynth.setLogLevel'; value: LogLevel }
     | { cmd: 'alphaSynth.setMasterVolume'; value: number }
     | { cmd: 'alphaSynth.setMetronomeVolume'; value: number }
@@ -77,7 +88,20 @@ export type IAlphaSynthWorkerMessage =
     | { cmd: 'alphaSynth.playPause' }
     | { cmd: 'alphaSynth.stop' }
     | { cmd: 'alphaSynth.playOneTimeMidiFile'; midi: unknown }
-    | { cmd: 'alphaSynth.loadSoundFontBytes'; data: Uint8Array; append: boolean }
+    | {
+          cmd: 'alphaSynth.loadSoundFontBytes';
+          data: Uint8Array;
+          append: boolean;
+          requestId?: number;
+          generation?: number;
+      }
+    | {
+          cmd: 'alphaSynth.replaceSoundFontBank';
+          requestId: number;
+          generation: number;
+          soundFonts: { cacheKey: string; data?: Uint8Array }[];
+      }
+    | { cmd: 'alphaSynth.cancelOperation'; requestId: number }
     | { cmd: 'alphaSynth.resetSoundFonts' }
     | { cmd: 'alphaSynth.loadMidi'; midi: unknown }
     | { cmd: 'alphaSynth.setChannelMute'; channel: number; mute: boolean }
@@ -96,8 +120,9 @@ export type IAlphaSynthWorkerMessage =
       }
     | { cmd: 'alphaSynth.playerStateChanged'; state: PlayerState; stopped: boolean }
     | { cmd: 'alphaSynth.finished' }
-    | { cmd: 'alphaSynth.soundFontLoaded' }
-    | { cmd: 'alphaSynth.soundFontLoadFailed'; error: Error }
+    | { cmd: 'alphaSynth.soundFontLoaded'; requestId?: number; generation?: number; cacheKeys?: string[] }
+    | { cmd: 'alphaSynth.soundFontLoadFailed'; error: Error; requestId?: number; generation?: number }
+    | { cmd: 'alphaSynth.operationCancelled'; requestId: number; generation?: number }
     | { cmd: 'alphaSynth.midiLoaded'; args: PositionChangedEventArgs }
     | { cmd: 'alphaSynth.midiLoadFailed'; error: Error }
     | { cmd: 'alphaSynth.readyForPlayback' }
@@ -121,15 +146,25 @@ export type IAlphaSynthWorkerMessage =
     | { cmd: 'alphaSynth.exporter.error'; exporterId: number; error: Error }
     /* output -> worker */
     | { cmd: 'alphaSynth.output.sampleRequest' }
-    | { cmd: 'alphaSynth.output.samplesPlayed'; samples: number }
+    | {
+          cmd: 'alphaSynth.output.samplesPlayed';
+          samples: number;
+          diagnostics?: SynthOutputDiagnostics;
+      }
+    | {
+          cmd: 'alphaSynth.output.diagnostics';
+          diagnostics: SynthOutputDiagnostics;
+      }
 
     /* worker -> output */
-    | { cmd: 'alphaSynth.output.addSamples'; samples: Float32Array }
+    | { cmd: 'alphaSynth.output.attachWorkerPort'; port: MessagePort }
+    | { cmd: 'alphaSynth.output.addSamples'; samples: Float32Array; isFinal?: boolean }
     | { cmd: 'alphaSynth.output.play' }
     | { cmd: 'alphaSynth.output.pause' }
     | { cmd: 'alphaSynth.output.stop' }
     | { cmd: 'alphaSynth.output.destroy' }
-    | { cmd: 'alphaSynth.output.resetSamples' };
+    | { cmd: 'alphaSynth.output.resetSamples' }
+    | { cmd: 'alphaSynth.output.resetDiagnostics' };
 
 /**
  * @internal

@@ -1,3 +1,4 @@
 /**@target web */
-import * as alphaTab from '@coderline/alphatab/alphaTab.core';
-alphaTab.Environment.initializeAudioWorklet();
+import { AlphaSynthWebWorklet } from '@coderline/alphatab/platform/javascript/AlphaSynthWebWorklet';
+
+AlphaSynthWebWorklet.init();

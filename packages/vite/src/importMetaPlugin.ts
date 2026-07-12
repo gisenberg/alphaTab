@@ -180,7 +180,7 @@ export function importMetaUrlPlugin(options: AlphaTabVitePluginOptions): Plugin 
 
                 let builtUrl: string;
                 if (isBuild) {
-                    builtUrl = await workerFileToUrl(resolvedConfig, file);
+                    builtUrl = await workerFileToUrl(resolvedConfig, file, workerType);
                 } else {
                     builtUrl = await fileToUrl(cleanUrl(file), resolvedConfig);
                     builtUrl = injectQuery(builtUrl, `${WORKER_FILE_ID}&type=${workerType}`);

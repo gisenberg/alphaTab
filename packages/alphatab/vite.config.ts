@@ -102,23 +102,37 @@ export default defineConfig(({ mode }) => {
         case 'umd':
             umd(config, __dirname, 'alphaTab', 'src/alphaTab.main.ts', true);
             break;
+        case 'worker':
+            esm(config, __dirname, 'alphaTab.worker', 'src/alphaTab.worker.ts');
+            addDts(config, __dirname);
+            break;
+        case 'worklet':
+            esm(config, __dirname, 'alphaTab.worklet', 'src/alphaTab.worklet.ts');
+            addDts(config, __dirname);
+            break;
+        case 'model':
+            esm(config, __dirname, 'alphaTab.model', 'src/alphaTab.model.ts');
+            addDts(config, __dirname);
+            break;
+        case 'rendering':
+            esm(config, __dirname, 'alphaTab.rendering', 'src/alphaTab.rendering.ts');
+            addDts(config, __dirname);
+            break;
+        case 'player':
+            esm(config, __dirname, 'alphaTab.player', 'src/alphaTab.player.ts');
+            addDts(config, __dirname);
+            break;
         //case 'esm':
         default: {
             esm(config, __dirname, 'alphaTab', 'src/alphaTab.main.ts');
 
             const entry = lib.entry as Record<string, string>;
             entry['alphaTab.core'] = path.resolve(__dirname, 'src/alphaTab.core.ts');
-            entry['alphaTab.worker'] = path.resolve(__dirname, 'src/alphaTab.worker.ts');
-            entry['alphaTab.worklet'] = path.resolve(__dirname, 'src/alphaTab.worklet.ts');
-
             (config.build!.rollupOptions!.external as string[]).push('@coderline/alphatab/alphaTab.core');
 
             for (const output of config.build!.rollupOptions!.output as OutputOptions[]) {
                 const isMin = (output.entryFileNames as string).includes('.min');
-                (output.plugins as Plugin[]).push(
-                    adjustScriptPathsPlugin(isMin),
-                    preserveClassDeclarationsPlugin()
-                );
+                (output.plugins as Plugin[]).push(adjustScriptPathsPlugin(isMin), preserveClassDeclarationsPlugin());
             }
 
             // alphaTab.core is an internal runtime-split JS chunk; its types

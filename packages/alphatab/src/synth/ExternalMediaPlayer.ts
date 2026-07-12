@@ -1,7 +1,13 @@
-import { EventEmitter, EventEmitterOfT, type IEventEmitter, type IEventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import {
+    EventEmitter,
+    EventEmitterOfT,
+    type IEventEmitter,
+    type IEventEmitterOfT
+} from '@coderline/alphatab/EventEmitter';
 import type { BackingTrack } from '@coderline/alphatab/model/BackingTrack';
 import { type IBackingTrackSynthOutput, BackingTrackPlayer } from '@coderline/alphatab/synth/BackingTrackPlayer';
 import type { ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
+import { TransportClock } from '@coderline/alphatab/synth/TransportClock';
 
 /**
  * A custom handler for integrating alphaTab with an external media source.
@@ -62,6 +68,7 @@ class ExternalMediaSynthOutput implements IExternalMediaSynthOutput {
     private _seekPosition: number = 0;
 
     private _handler?: IExternalMediaHandler;
+    public readonly transportClock: TransportClock = new TransportClock(() => Date.now());
 
     public get handler(): IExternalMediaHandler | undefined {
         return this._handler;
@@ -91,6 +98,7 @@ class ExternalMediaSynthOutput implements IExternalMediaSynthOutput {
         if (handler) {
             handler.playbackRate = value;
         }
+        this.transportClock.setPlaybackRate(value);
     }
 
     public get masterVolume(): number {
@@ -105,6 +113,7 @@ class ExternalMediaSynthOutput implements IExternalMediaSynthOutput {
     }
 
     public seekTo(time: number): void {
+        this.transportClock.seek(time);
         const handler = this.handler;
         if (handler) {
             handler.seekTo(time);
@@ -120,21 +129,26 @@ class ExternalMediaSynthOutput implements IExternalMediaSynthOutput {
     }
 
     public updatePosition(currentTime: number) {
+        this.transportClock.observe(currentTime);
         (this.timeUpdate as EventEmitterOfT<number>).trigger(currentTime);
     }
 
     public play(): void {
+        this.transportClock.start();
         this.handler?.play();
     }
     public destroy(): void {}
 
     public pause(): void {
+        this.transportClock.pause();
         this.handler?.pause();
     }
 
     public addSamples(_samples: Float32Array): void {}
     public resetSamples(): void {}
     public activate(): void {}
+
+    public cancelScheduledMetronomeClicks(): void {}
 
     public readonly ready: IEventEmitter = new EventEmitter();
     public readonly samplesPlayed: IEventEmitterOfT<number> = new EventEmitterOfT<number>();

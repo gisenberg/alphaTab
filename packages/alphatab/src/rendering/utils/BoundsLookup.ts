@@ -9,10 +9,68 @@ import { MasterBarBounds } from '@coderline/alphatab/rendering/utils/MasterBarBo
 import { NoteBounds } from '@coderline/alphatab/rendering/utils/NoteBounds';
 import { StaffSystemBounds } from '@coderline/alphatab/rendering/utils/StaffSystemBounds';
 
+/** Compact, structured-clone friendly bounds payload used by rendering workers. */
+export interface CompactBoundsLookup {
+    version: 1;
+    floats: Float32Array;
+    integers: Int32Array;
+}
+
 /**
  * @public
  */
 export class BoundsLookup {
+    /**
+     * Packs the hierarchy into typed arrays, avoiding thousands of Maps and
+     * repeated string keys on the worker boundary.
+     * @target web
+     */
+    public toCompact(): CompactBoundsLookup {
+        const floats: number[] = [];
+        const integers: number[] = [];
+        const writeBounds = (bounds: Bounds): void => {
+            floats.push(bounds.x, bounds.y, bounds.w, bounds.h);
+        };
+
+        integers.push(this.staffSystems.length);
+        for (const system of this.staffSystems) {
+            writeBounds(system.visualBounds);
+            writeBounds(system.realBounds);
+            integers.push(system.bars.length);
+            for (const masterBar of system.bars) {
+                writeBounds(masterBar.lineAlignedBounds);
+                writeBounds(masterBar.visualBounds);
+                writeBounds(masterBar.realBounds);
+                integers.push(masterBar.index, masterBar.isFirstOfLine ? 1 : 0, masterBar.bars.length);
+                for (const bar of masterBar.bars) {
+                    writeBounds(bar.visualBounds);
+                    writeBounds(bar.realBounds);
+                    integers.push(bar.beats.length);
+                    for (const beat of bar.beats) {
+                        writeBounds(beat.visualBounds);
+                        writeBounds(beat.realBounds);
+                        floats.push(beat.onNotesX);
+                        integers.push(
+                            beat.beat.voice.bar.staff.track.index,
+                            beat.beat.voice.bar.staff.index,
+                            beat.beat.voice.bar.index,
+                            beat.beat.voice.index,
+                            beat.beat.index,
+                            beat.notes?.length ?? 0
+                        );
+                        if (beat.notes) {
+                            for (const note of beat.notes) {
+                                integers.push(note.note.index);
+                                writeBounds(note.noteHeadBounds);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return { version: 1, floats: new Float32Array(floats), integers: new Int32Array(integers) };
+    }
+
     public toJson(): Map<string, unknown> {
         const json = new Map<string, unknown>();
         const systems: Map<string, unknown>[] = [];
@@ -70,9 +128,12 @@ export class BoundsLookup {
         return json;
     }
 
-    public static fromJson(json: Map<string, unknown> | null, score: Score): BoundsLookup | null {
+    public static fromJson(json: Map<string, unknown> | CompactBoundsLookup | null, score: Score): BoundsLookup | null {
         if (json === null) {
             return null;
+        }
+        if (!(json instanceof Map)) {
+            return BoundsLookup.fromCompact(json, score);
         }
         const lookup: BoundsLookup = new BoundsLookup();
         const staffSystems = json.get('staffSystems')! as Map<string, unknown>[];
@@ -121,6 +182,77 @@ export class BoundsLookup {
                             }
                         }
                         b.addBeat(bb);
+                    }
+                }
+            }
+        }
+        return lookup;
+    }
+
+    /** Rehydrates a worker's compact typed-array payload. @target web */
+    public static fromCompact(compact: CompactBoundsLookup, score: Score): BoundsLookup {
+        if (compact.version !== 1) {
+            throw new Error(`Unsupported compact bounds version: ${compact.version}`);
+        }
+        let floatIndex = 0;
+        let integerIndex = 0;
+        const readBounds = (): Bounds => {
+            const bounds = new Bounds();
+            bounds.x = compact.floats[floatIndex++];
+            bounds.y = compact.floats[floatIndex++];
+            bounds.w = compact.floats[floatIndex++];
+            bounds.h = compact.floats[floatIndex++];
+            return bounds;
+        };
+
+        const lookup = new BoundsLookup();
+        const systemCount = compact.integers[integerIndex++];
+        for (let systemIndex = 0; systemIndex < systemCount; systemIndex++) {
+            const system = new StaffSystemBounds();
+            system.visualBounds = readBounds();
+            system.realBounds = readBounds();
+            lookup.addStaffSystem(system);
+            const masterBarCount = compact.integers[integerIndex++];
+            for (let masterBarIndex = 0; masterBarIndex < masterBarCount; masterBarIndex++) {
+                const masterBar = new MasterBarBounds();
+                masterBar.lineAlignedBounds = readBounds();
+                masterBar.visualBounds = readBounds();
+                masterBar.realBounds = readBounds();
+                masterBar.index = compact.integers[integerIndex++];
+                masterBar.isFirstOfLine = compact.integers[integerIndex++] !== 0;
+                lookup.addMasterBar(masterBar);
+                const barCount = compact.integers[integerIndex++];
+                for (let barIndex = 0; barIndex < barCount; barIndex++) {
+                    const bar = new BarBounds();
+                    bar.visualBounds = readBounds();
+                    bar.realBounds = readBounds();
+                    masterBar.addBar(bar);
+                    const beatCount = compact.integers[integerIndex++];
+                    for (let beatIndex = 0; beatIndex < beatCount; beatIndex++) {
+                        const beat = new BeatBounds();
+                        beat.visualBounds = readBounds();
+                        beat.realBounds = readBounds();
+                        beat.onNotesX = compact.floats[floatIndex++];
+                        const trackIndex = compact.integers[integerIndex++];
+                        const staffIndex = compact.integers[integerIndex++];
+                        const scoreBarIndex = compact.integers[integerIndex++];
+                        const voiceIndex = compact.integers[integerIndex++];
+                        const scoreBeatIndex = compact.integers[integerIndex++];
+                        const noteCount = compact.integers[integerIndex++];
+                        beat.beat =
+                            score.tracks[trackIndex].staves[staffIndex].bars[scoreBarIndex].voices[voiceIndex].beats[
+                                scoreBeatIndex
+                            ];
+                        if (noteCount > 0) {
+                            beat.notes = [];
+                            for (let noteIndex = 0; noteIndex < noteCount; noteIndex++) {
+                                const note = new NoteBounds();
+                                note.note = beat.beat.notes[compact.integers[integerIndex++]];
+                                note.noteHeadBounds = readBounds();
+                                beat.addNote(note);
+                            }
+                        }
+                        bar.addBeat(beat);
                     }
                 }
             }

@@ -24,9 +24,11 @@ import { TestPlatform } from 'test/TestPlatform';
 
 class BufferedTestOutput extends TestOutput {
     private _pendingSamples: Float32Array[] = [];
+    public finalBufferReceived: boolean = false;
 
-    public override addSamples(samples: Float32Array): void {
+    public override addSamples(samples: Float32Array, isFinal: boolean = false): void {
         this._pendingSamples.push(samples);
+        this.finalBufferReceived ||= isFinal;
     }
 
     public override pause(): void {
@@ -81,6 +83,7 @@ describe('AlphaSynthTests', () => {
         }
 
         expect(finished).toBe(true);
+        expect(output.finalBufferReceived).toBe(true);
     });
 
     it('pcm-generation', async () => {

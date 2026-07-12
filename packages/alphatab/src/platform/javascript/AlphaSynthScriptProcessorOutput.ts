@@ -4,6 +4,7 @@ import { SynthConstants } from '@coderline/alphatab/synth/SynthConstants';
 import {
     calculateWebAudioBufferCount,
     calculateWebAudioRequestBufferCount,
+    SynthOutputDiagnosticsTracker,
     writeInterleavedStereoSamples
 } from '@coderline/alphatab/platform/javascript/WebAudioSampleBuffer';
 
@@ -18,6 +19,10 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     private _circularBuffer!: CircularSampleBuffer;
     private _bufferCount: number = 0;
     private _requestedBufferCount: number = 0;
+    private _diagnostics!: SynthOutputDiagnosticsTracker;
+    private _diagnosticOutputFrames: number = 0;
+    private _hasReceivedSamples: boolean = false;
+    private _finalBufferReceived: boolean = false;
 
     public override open(bufferTimeInMilliseconds: number) {
         super.open(bufferTimeInMilliseconds);
@@ -28,6 +33,10 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
             2
         );
         this._circularBuffer = new CircularSampleBuffer(AlphaSynthWebAudioOutputBase.BufferSize * this._bufferCount);
+        const capacityFrames =
+            (AlphaSynthWebAudioOutputBase.BufferSize * this._bufferCount) / SynthConstants.AudioChannels;
+        this._diagnostics = new SynthOutputDiagnosticsTracker('script-processor', this.sampleRate, capacityFrames);
+        this.configurePlaybackDiagnostics('script-processor', capacityFrames);
         this.onReady();
     }
 
@@ -39,6 +48,9 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
         this._audioNode.onaudioprocess = this._generateSound.bind(this);
         this._circularBuffer.clear();
         this._requestedBufferCount = 0;
+        this._hasReceivedSamples = false;
+        this._finalBufferReceived = false;
+        this._diagnostics.recordBufferDepth(0);
         this._requestBuffers();
         this.source!.connect(this._audioNode, 0, 0);
         this.startSource();
@@ -46,6 +58,8 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     }
 
     public override pause(): void {
+        this._diagnostics.recordBufferDepth(0);
+        this._publishDiagnostics(true);
         super.pause();
         if (this._audioNode) {
             this._audioNode.disconnect(0);
@@ -53,10 +67,14 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
         this._audioNode = null;
     }
 
-    public addSamples(f: Float32Array): void {
+    public addSamples(f: Float32Array, isFinal: boolean = false): void {
         const writtenSamples = this._circularBuffer.write(f, 0, f.length);
         this._requestedBufferCount = Math.max(0, this._requestedBufferCount - 1);
         const droppedFrames = Math.floor((f.length - writtenSamples) / SynthConstants.AudioChannels);
+        this._hasReceivedSamples ||= f.length > 0;
+        this._finalBufferReceived ||= isFinal;
+        this._diagnostics.recordDroppedFrames(droppedFrames);
+        this._diagnostics.recordBufferDepth(this._circularBuffer.count / SynthConstants.AudioChannels);
         if (droppedFrames > 0) {
             this.onSamplesPlayed(droppedFrames);
         }
@@ -65,6 +83,9 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     public resetSamples(): void {
         this._circularBuffer.clear();
         this._requestedBufferCount = 0;
+        this._hasReceivedSamples = false;
+        this._finalBufferReceived = false;
+        this._diagnostics.recordBufferDepth(0);
         this._requestBuffers();
     }
 
@@ -102,7 +123,34 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
         const samplesFromBuffer = this._circularBuffer.read(buffer, 0, interleavedSamplesToRead);
         const playedFrames = writeInterleavedStereoSamples(buffer, samplesFromBuffer, left, right);
 
+        if (this._hasReceivedSamples) {
+            const finalTail = this._finalBufferReceived && playedFrames < left.length;
+            this._diagnostics.recordOutput(
+                playedFrames,
+                finalTail ? playedFrames : left.length,
+                !finalTail
+            );
+        }
+        this._diagnostics.recordBufferDepth(this._circularBuffer.count / SynthConstants.AudioChannels);
+        this._diagnosticOutputFrames += left.length;
+        this._publishDiagnostics();
+
         this.onSamplesPlayed(playedFrames);
         this._requestBuffers();
+    }
+
+    protected override onResetPlaybackDiagnostics(): void {
+        this._diagnostics.reset(this._circularBuffer.count / SynthConstants.AudioChannels);
+        this._diagnosticOutputFrames = 0;
+        this.setPlaybackBufferDiagnostics(this._diagnostics.snapshot);
+    }
+
+    private _publishDiagnostics(force: boolean = false): void {
+        const intervalFrames = Math.max(1, Math.floor(this.sampleRate / 4));
+        if (!force && this._diagnosticOutputFrames < intervalFrames) {
+            return;
+        }
+        this._diagnosticOutputFrames = 0;
+        this.setPlaybackBufferDiagnostics(this._diagnostics.snapshot);
     }
 }

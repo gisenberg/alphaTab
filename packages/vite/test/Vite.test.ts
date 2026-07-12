@@ -45,6 +45,8 @@ async function runBundleSmokeTest(vite: ViteLike) {
     let appValidated = false;
     let workletValidated = false;
     let workerValidated = false;
+    let workletBytes = Number.POSITIVE_INFINITY;
+    let workerBytes = Number.POSITIVE_INFINITY;
 
     for (const file of dir) {
         if (file.isFile()) {
@@ -63,15 +65,17 @@ async function runBundleSmokeTest(vite: ViteLike) {
                 expect(text).not.toContain('__ALPHATAB_VITE__');
                 appValidated = true;
             } else if (file.name.startsWith('alphaTab.worker-')) {
-                expect(text).toContain('initializeWorker()');
-                // without custom chunking the app will bundle alphatab directly
+                expect(text).toContain('alphaTab.initialize');
+                expect(text).toContain('alphaSynth.initialize');
                 expect(text).toContain('.at-surface');
+                workerBytes = Buffer.byteLength(text);
 
                 workerValidated = true;
             } else if (file.name.startsWith('alphaTab.worklet-')) {
-                expect(text).toContain('initializeAudioWorklet()');
-                // without custom chunking the app will bundle alphatab directly
-                expect(text).toContain('.at-surface');
+                expect(text).toContain('registerProcessor');
+                expect(text).toContain('alphaSynth.output.diagnostics');
+                expect(text).not.toContain('.at-surface');
+                workletBytes = Buffer.byteLength(text);
                 workletValidated = true;
             }
         }
@@ -80,6 +84,10 @@ async function runBundleSmokeTest(vite: ViteLike) {
     expect(appValidated, 'Missing app validation').toBe(true);
     expect(workerValidated, 'Missing worker validation').toBe(true);
     expect(workletValidated, 'Missing worklet validation').toBe(true);
+    // Broad regression budgets: the worker is minified and the real-time
+    // worklet must stay isolated from the full renderer/player bundle.
+    expect(workerBytes).toBeLessThan(1_300_000);
+    expect(workletBytes).toBeLessThan(20_000);
 }
 
 async function loadVite(major: 7 | 8): Promise<ViteLike> {

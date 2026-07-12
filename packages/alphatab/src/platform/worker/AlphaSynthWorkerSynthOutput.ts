@@ -6,6 +6,10 @@ import {
     type IEventEmitterOfT
 } from '@coderline/alphatab/EventEmitter';
 import { Logger } from '@coderline/alphatab/Logger';
+import {
+    SharedSampleBuffer,
+    type SharedSampleBufferDescriptor
+} from '@coderline/alphatab/platform/javascript/SharedSampleBuffer';
 import type {
     IAlphaSynthWorkerMessage,
     IAlphaTabWorkerGlobalScope
@@ -21,25 +25,42 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
     public static preferredSampleRate: number = 0;
 
     private _main: IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>;
+    private _sharedSampleBuffer: SharedSampleBuffer | null;
+    private _directPort: MessagePort | null = null;
+    private readonly _boundHandleMessage: (e: MessageEvent<IAlphaSynthWorkerMessage>) => void;
 
     public get sampleRate(): number {
         return AlphaSynthWorkerSynthOutput.preferredSampleRate;
     }
 
-    public constructor(main: IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>) {
+    public constructor(
+        main: IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>,
+        sharedSampleBuffer?: SharedSampleBufferDescriptor
+    ) {
         this._main = main;
+        this._sharedSampleBuffer = sharedSampleBuffer ? SharedSampleBuffer.fromDescriptor(sharedSampleBuffer) : null;
+        this._boundHandleMessage = this._handleMessage.bind(this);
     }
 
     public open(_sampleRate: number): void {
         Logger.debug('AlphaSynth', 'Initializing synth worker');
-        this._main.addEventListener('message', this._handleMessage.bind(this));
+        this._main.addEventListener('message', this._boundHandleMessage);
         (this.ready as EventEmitter).trigger();
     }
 
     public destroy(): void {
+        this._directPort?.close();
+        this._directPort = null;
         this._main.postMessage({
             cmd: 'alphaSynth.output.destroy'
         });
+    }
+
+    public attachDirectPort(port: MessagePort): void {
+        this._directPort?.close();
+        this._directPort = port;
+        port.addEventListener('message', this._boundHandleMessage);
+        port.start();
     }
 
     private _handleMessage(e: MessageEvent<IAlphaSynthWorkerMessage>): void {
@@ -58,10 +79,15 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
     public readonly samplesPlayed: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
     public readonly sampleRequest: IEventEmitter = new EventEmitter();
 
-    public addSamples(samples: Float32Array): void {
-        this._main.postMessage({
+    public addSamples(samples: Float32Array, isFinal: boolean = false): void {
+        if (this._sharedSampleBuffer) {
+            this._sharedSampleBuffer.write(samples, isFinal);
+            return;
+        }
+        this._postRealtimeMessage({
             cmd: 'alphaSynth.output.addSamples',
-            samples: Environment.prepareForPostMessage(samples)
+            samples: Environment.prepareForPostMessage(samples),
+            isFinal
         });
     }
 
@@ -78,9 +104,14 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
     }
 
     public resetSamples(): void {
-        this._main.postMessage({
+        this._sharedSampleBuffer?.resetSamples();
+        this._postRealtimeMessage({
             cmd: 'alphaSynth.output.resetSamples'
         });
+    }
+
+    private _postRealtimeMessage(message: IAlphaSynthWorkerMessage): void {
+        (this._directPort ?? this._main).postMessage(message);
     }
 
     public activate(): void {

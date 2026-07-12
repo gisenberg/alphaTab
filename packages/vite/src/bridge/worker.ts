@@ -61,17 +61,22 @@ function saveEmitWorkerAsset(config: ResolvedConfig, asset: WorkerBundleAsset): 
 /**
  * @internal
  */
-export async function workerFileToUrl(config: ResolvedConfig, id: string): Promise<string> {
+export async function workerFileToUrl(
+    config: ResolvedConfig,
+    id: string,
+    workerType: AlphaTabWorkerTypes
+): Promise<string> {
     const workerMap = workerCache.get(config.mainConfig || config)!;
-    let fileName = workerMap.bundle.get(id);
+    const cacheKey = `${workerType}:${id}`;
+    let fileName = workerMap.bundle.get(cacheKey);
     if (!fileName) {
-        const outputChunk = await bundleWorkerEntry(config, id);
+        const outputChunk = await bundleWorkerEntry(config, id, workerType);
         fileName = outputChunk.fileName;
         saveEmitWorkerAsset(config, {
             fileName,
             source: outputChunk.code
         });
-        workerMap.bundle.set(id, fileName);
+        workerMap.bundle.set(cacheKey, fileName);
     }
     return encodeWorkerAssetFileName(fileName, workerMap);
 }
@@ -86,7 +91,11 @@ function encodeWorkerAssetFileName(fileName: string, workerCache: WorkerCache): 
     return `${WORKER_ASSET_ID}${hash}__`;
 }
 
-async function bundleWorkerEntry(config: ResolvedConfig, id: string): Promise<BundledWorkerChunk> {
+async function bundleWorkerEntry(
+    config: ResolvedConfig,
+    id: string,
+    workerType: AlphaTabWorkerTypes
+): Promise<BundledWorkerChunk> {
     const input = cleanUrl(id);
     const bundleChain = config.bundleChain ?? [];
     const newBundleChain = [...bundleChain, input];
@@ -96,7 +105,12 @@ async function bundleWorkerEntry(config: ResolvedConfig, id: string): Promise<Bu
         );
     }
 
-    const { plugins, format } = config.worker;
+    const { plugins } = config.worker;
+    // alphaTab creates module workers and audio worklets. Keeping those bundles
+    // as ESM preserves import.meta and enables chunking; only the classic-worker
+    // fallback needs the consumer-configured worker format (normally IIFE).
+    const format =
+        workerType === AlphaTabWorkerTypes.WorkerClassic ? config.worker.format : 'es';
     // Vite 8 exposes `rolldownOptions`; Vite 7 only `rollupOptions`.
     const workerOptionsCarrier = config.worker as { rolldownOptions?: any; rollupOptions?: any };
     const workerBundlerOptions = workerOptionsCarrier.rolldownOptions ?? workerOptionsCarrier.rollupOptions;
@@ -205,7 +219,15 @@ async function bundleWorkerEntryRolldown(
         }
     });
     try {
-        const { output } = await bundle.generate(generateOptions);
+        const { output } = await bundle.generate({
+            minify:
+                workerEnvironment.config.build.minify === 'oxc'
+                    ? true
+                    : workerEnvironment.config.build.minify === false
+                      ? 'dce-only'
+                      : undefined,
+            ...generateOptions
+        });
         const [outputChunk, ...rest] = output;
         for (const o of rest) {
             if (o.type === 'asset') {

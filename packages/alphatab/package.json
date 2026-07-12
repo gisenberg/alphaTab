@@ -40,6 +40,18 @@
             "import": "./dist/alphaTab.vite.mjs",
             "require": "./dist/alphaTab.vite.js"
         },
+        "./model": {
+            "types": "./dist/alphaTab.model.d.ts",
+            "import": "./dist/alphaTab.model.mjs"
+        },
+        "./rendering": {
+            "types": "./dist/alphaTab.rendering.d.ts",
+            "import": "./dist/alphaTab.rendering.mjs"
+        },
+        "./player": {
+            "types": "./dist/alphaTab.player.d.ts",
+            "import": "./dist/alphaTab.player.mjs"
+        },
         "./soundfont/*": "./dist/soundfont/*",
         "./font/*": "./dist/font/*"
     },
@@ -53,8 +65,12 @@
         "prepack": "tsx scripts/prepack.mts",
         "bravura-smufl": "tsx scripts/smufl-metadata.ts font/bravura/bravura_metadata.json font/bravura/bravura_alphatab_metadata.json true",
         "generate-typescript": "rimraf src/generated && tsx scripts/generate-typescript.ts",
-        "build": "npm run generate-typescript && vite build --mode esm && vite build --mode umd",
-        "test": "vitest run",
+        "build": "npm run generate-typescript && vite build --mode esm && vite build --mode model && vite build --mode rendering && vite build --mode player && vite build --mode worker && vite build --mode worklet && vite build --mode umd",
+        "test": "npm run test:unit && npm run test:performance",
+        "test:unit": "vitest run --exclude test/visualTests/features/ColorPerformance.test.ts",
+        "test:performance": "vitest run test/visualTests/features/ColorPerformance.test.ts --pool=forks --no-file-parallelism --maxWorkers=1",
+        "bench:dsp": "node scripts/benchmark-dsp.mts",
+        "bench:bounds": "tsx scripts/benchmark-bounds.mts",
         "test-web": "npm run test",
         "test-accept-reference": "tsx scripts/accept-new-reference-files.ts"
     },

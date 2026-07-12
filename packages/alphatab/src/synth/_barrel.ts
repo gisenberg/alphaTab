@@ -2,6 +2,7 @@ export { AlphaSynthBase, AlphaSynth, type IAlphaSynthAudioExporter } from '@code
 export { CircularSampleBuffer } from '@coderline/alphatab/synth/ds/CircularSampleBuffer';
 export { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
 export type { ISynthOutput, ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
+export type { SynthOutputDiagnostics } from '@coderline/alphatab/synth/SynthOutputDiagnostics';
 export type { IBackingTrackSynthOutput } from '@coderline/alphatab/synth/BackingTrackPlayer';
 export { type IAlphaSynth, BackingTrackSyncPoint } from '@coderline/alphatab/synth/IAlphaSynth';
 export { PlayerState } from '@coderline/alphatab/synth/PlayerState';

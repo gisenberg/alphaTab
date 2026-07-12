@@ -8,6 +8,7 @@ import {
 } from '@coderline/alphatab/EventEmitter';
 import { Logger } from '@coderline/alphatab/Logger';
 import type { ISynthOutput, ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
+import type { SynthOutputDiagnostics } from '@coderline/alphatab/synth/SynthOutputDiagnostics';
 
 /**
  * @target web
@@ -154,6 +155,21 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
 
     private _resumeHandler?: () => void;
     private _sourceStarted: boolean = false;
+    private _playbackFailureCount: number = 0;
+    private _lastPlaybackFailure: string | null = null;
+    private _bufferDiagnostics: SynthOutputDiagnostics = {
+        outputMode: 'unknown',
+        sampleRate: AlphaSynthWebAudioOutputBase.PreferredSampleRate,
+        bufferCapacityFrames: 0,
+        bufferedFrames: 0,
+        peakBufferedFrames: 0,
+        outputFrames: 0,
+        underrunCount: 0,
+        underrunFrames: 0,
+        droppedFrames: 0,
+        playbackFailureCount: 0,
+        lastPlaybackFailure: null
+    };
 
     public get sampleRate(): number {
         return this.context ? this.context.sampleRate : AlphaSynthWebAudioOutputBase.PreferredSampleRate;
@@ -273,6 +289,16 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     public readonly samplesPlayed: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
     public readonly sampleRequest: IEventEmitter = new EventEmitter();
     public readonly playbackFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+    public readonly playbackDiagnosticsChanged: IEventEmitterOfT<SynthOutputDiagnostics> =
+        new EventEmitterOfT<SynthOutputDiagnostics>(() => this.playbackDiagnostics);
+
+    public get playbackDiagnostics(): SynthOutputDiagnostics {
+        return {
+            ...this._bufferDiagnostics,
+            playbackFailureCount: this._playbackFailureCount,
+            lastPlaybackFailure: this._lastPlaybackFailure
+        };
+    }
 
     protected onSamplesPlayed(numberOfSamples: number) {
         (this.samplesPlayed as EventEmitterOfT<number>).trigger(numberOfSamples);
@@ -287,7 +313,58 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     }
 
     protected onPlaybackFailed(error: Error) {
+        this._playbackFailureCount++;
+        this._lastPlaybackFailure = error.message;
+        this._emitPlaybackDiagnostics();
         (this.playbackFailed as EventEmitterOfT<Error>).trigger(error);
+    }
+
+    protected setPlaybackBufferDiagnostics(diagnostics: SynthOutputDiagnostics): void {
+        this._bufferDiagnostics = diagnostics;
+        this._emitPlaybackDiagnostics();
+    }
+
+    protected configurePlaybackDiagnostics(
+        outputMode: SynthOutputDiagnostics['outputMode'],
+        bufferCapacityFrames: number
+    ): void {
+        this._bufferDiagnostics = {
+            outputMode,
+            sampleRate: this.sampleRate,
+            bufferCapacityFrames: Math.max(0, Math.floor(bufferCapacityFrames)),
+            bufferedFrames: 0,
+            peakBufferedFrames: 0,
+            outputFrames: 0,
+            underrunCount: 0,
+            underrunFrames: 0,
+            droppedFrames: 0,
+            playbackFailureCount: 0,
+            lastPlaybackFailure: null
+        };
+    }
+
+    public resetPlaybackDiagnostics(): void {
+        this._playbackFailureCount = 0;
+        this._lastPlaybackFailure = null;
+        this.onResetPlaybackDiagnostics();
+    }
+
+    protected onResetPlaybackDiagnostics(): void {
+        this._bufferDiagnostics = {
+            ...this._bufferDiagnostics,
+            peakBufferedFrames: this._bufferDiagnostics.bufferedFrames,
+            outputFrames: 0,
+            underrunCount: 0,
+            underrunFrames: 0,
+            droppedFrames: 0
+        };
+        this._emitPlaybackDiagnostics();
+    }
+
+    private _emitPlaybackDiagnostics(): void {
+        (this.playbackDiagnosticsChanged as EventEmitterOfT<SynthOutputDiagnostics>).trigger(
+            this.playbackDiagnostics
+        );
     }
 
     public enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {

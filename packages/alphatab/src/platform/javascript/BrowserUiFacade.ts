@@ -36,8 +36,12 @@ import { BackingTrackPlayer } from '@coderline/alphatab/synth/BackingTrackPlayer
 import { CoreSettings, FontFileFormat } from '@coderline/alphatab/CoreSettings';
 import type { IAudioExporterWorker } from '@coderline/alphatab/synth/IAudioExporter';
 import { AlphaSynthAudioExporterWorkerApi } from '@coderline/alphatab/platform/worker/AlphaSynthAudioExporterWorkerApi';
-import type { IAlphaTabRenderingWorker, IAlphaSynthWorker } from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
+import type {
+    IAlphaTabRenderingWorker,
+    IAlphaSynthWorker
+} from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
 import { ScoreRenderer } from '@coderline/alphatab/rendering/ScoreRenderer';
+import { RenderTileCache, type RenderTileCacheStats } from '@coderline/alphatab/platform/javascript/RenderTileCache';
 
 /**
  * @target web
@@ -57,8 +61,8 @@ enum ResultState {
 interface ResultPlaceholder extends HTMLElement {
     layoutResultId?: string;
     resultState: ResultState;
-    renderedResult?: Element[];
     renderedResultId?: string;
+    isIntersecting: boolean;
 }
 
 /**
@@ -94,6 +98,7 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
     private _intersectionObserver: IntersectionObserver;
     private _barToElementLookup: Map<number, HTMLElement> = new Map<number, HTMLElement>();
     private _resultIdToElementLookup: Map<string, ResultPlaceholder> = new Map<string, ResultPlaceholder>();
+    private _renderTileCache: RenderTileCache<Element[]> = new RenderTileCache<Element[]>(8, 4000);
     private _webFont!: RegisteredWebFont;
 
     public rootContainerBecameVisible: IEventEmitter = new EventEmitter();
@@ -108,6 +113,11 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
 
     public get canRender(): boolean {
         return this._areAllFontsLoaded();
+    }
+
+    /** Diagnostics for the bounded detached score-tile cache. */
+    public get renderTileCacheStats(): RenderTileCacheStats {
+        return this._renderTileCache.stats;
     }
 
     private _areAllFontsLoaded(): boolean {
@@ -160,29 +170,56 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
                 }
             } else if ('layoutResultId' in htmlElement && this._api.settings.core.enableLazyLoading) {
                 const placeholder = htmlElement as ResultPlaceholder;
+                placeholder.isIntersecting = e.isIntersecting;
                 if (e.isIntersecting) {
                     // missing result or result not matching layout -> request render
                     if (placeholder.renderedResultId !== placeholder.layoutResultId) {
                         if (this._resultIdToElementLookup.has(placeholder.layoutResultId!)) {
-                            if (placeholder.resultState !== ResultState.RenderRequested) {
-                                placeholder.resultState = ResultState.RenderRequested;
-                                this._api.renderer.renderResult(placeholder.layoutResultId!);
-                            } else {
-                                // Already requested render of this partial, wait for result
-                            }
+                            this._requestTileRender(placeholder);
                         } else {
                             htmlElement.replaceChildren();
                         }
                     }
                     // detached and became visible
                     else if (placeholder.resultState === ResultState.Detached) {
-                        htmlElement.replaceChildren(...placeholder.renderedResult!);
-                        placeholder.resultState = ResultState.RenderDone;
+                        const renderedResult = this._renderTileCache.take(placeholder.layoutResultId!);
+                        if (renderedResult) {
+                            htmlElement.replaceChildren(...renderedResult);
+                            placeholder.resultState = ResultState.RenderDone;
+                        } else {
+                            placeholder.renderedResultId = undefined;
+                            placeholder.resultState = ResultState.LayoutDone;
+                            this._requestTileRender(placeholder);
+                        }
                     }
                 } else if (placeholder.resultState === ResultState.RenderDone) {
-                    placeholder.resultState = ResultState.Detached;
-                    placeholder.replaceChildren();
+                    this._detachTile(placeholder);
                 }
+            }
+        }
+    }
+
+    private _requestTileRender(placeholder: ResultPlaceholder): void {
+        if (placeholder.resultState !== ResultState.RenderRequested) {
+            placeholder.resultState = ResultState.RenderRequested;
+            this._api.renderer.renderResult(placeholder.layoutResultId!);
+        }
+    }
+
+    private _detachTile(placeholder: ResultPlaceholder): void {
+        const nodes = Array.from(placeholder.children);
+        placeholder.replaceChildren();
+        placeholder.resultState = ResultState.Detached;
+        const elementCount = nodes.reduce((count, node) => count + 1 + node.querySelectorAll('*').length, 0);
+        this._markEvictedTiles(this._renderTileCache.set(placeholder.layoutResultId!, nodes, elementCount));
+    }
+
+    private _markEvictedTiles(ids: string[]): void {
+        for (const id of ids) {
+            const evicted = this._resultIdToElementLookup.get(id);
+            if (evicted?.resultState === ResultState.Detached && evicted.renderedResultId === id) {
+                evicted.renderedResultId = undefined;
+                evicted.resultState = ResultState.LayoutDone;
             }
         }
     }
@@ -217,6 +254,12 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
             settings.setSongBookModeSettings();
         }
         api.settings = settings;
+        this._markEvictedTiles(
+            this._renderTileCache.configure(
+                settings.core.lazyLoadingCacheSize,
+                settings.core.lazyLoadingCacheElementLimit
+            )
+        );
         this._setupFontCheckers(settings);
 
         this._initialTrackIndexes = this.parseTracks(settings.core.tracks);
@@ -254,6 +297,8 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
     public destroy(): void {
         const element = (this.rootContainer as HtmlElementContainer).element;
         element.innerHTML = '';
+        this._renderTileCache.clear();
+        this._intersectionObserver.disconnect();
         const webFont = this._webFont;
 
         const styleElement = webFont.elements.get(element.ownerDocument);
@@ -369,6 +414,7 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
             this._totalResultCount = 0;
             this._resultIdToElementLookup.clear();
             this._barToElementLookup.clear();
+            this._renderTileCache.clear();
         });
 
         const initialRender = () => {
@@ -649,6 +695,7 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
         }
 
         const placeholder = this._resultIdToElementLookup.get(renderResult.id)!;
+        this._renderTileCache.delete(renderResult.id);
 
         const body: any = renderResult.renderResult;
         if (typeof body === 'string') {
@@ -658,7 +705,9 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
         }
         placeholder.resultState = ResultState.RenderDone;
         placeholder.renderedResultId = renderResult.id;
-        placeholder.renderedResult = Array.from(placeholder.children);
+        if (this._api.settings.core.enableLazyLoading && !placeholder.isIntersecting) {
+            this._detachTile(placeholder);
+        }
     }
 
     public beginAppendRenderResults(renderResult: RenderFinishedEventArgs | null): void {
@@ -690,7 +739,7 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
             placeholder.layoutResultId = renderResult.id;
             placeholder.resultState = ResultState.LayoutDone;
             placeholder.renderedResultId = undefined;
-            placeholder.renderedResult = undefined;
+            placeholder.isIntersecting = false;
 
             if (!renderResult.reuseViewport) {
                 placeholder.textContent = '';

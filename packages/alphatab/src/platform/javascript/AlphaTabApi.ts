@@ -14,6 +14,11 @@ import type { SettingsJson } from '@coderline/alphatab/generated/SettingsJson';
 import { PlayerMode } from '@coderline/alphatab/PlayerSettings';
 import { Logger } from '@coderline/alphatab/Logger';
 import { FileLoadError } from '@coderline/alphatab/FileLoadError';
+import { AlphaSynth } from '@coderline/alphatab/synth/AlphaSynth';
+import {
+    AlphaSynthWebWorkerApi,
+    type SoundFontBankLoadOptions
+} from '@coderline/alphatab/platform/worker/AlphaSynthWebWorkerApi';
 
 /**
  * @target web
@@ -33,6 +38,34 @@ export class AlphaTabApi extends AlphaTabApiBase<SettingsJson | Settings> {
      */
     public constructor(element: HTMLElement, options: SettingsJson | Settings) {
         super(new BrowserUiFacade(element), options);
+    }
+
+    /**
+     * Atomically replaces all SoundFont layers. Unlike repeated
+     * {@link loadSoundFont} calls, this Promise is correlated to one worker
+     * transaction and cannot be completed by an unrelated load event.
+     */
+    public async loadSoundFontBankAsync(
+        soundFonts: readonly Uint8Array[],
+        options: SoundFontBankLoadOptions = {}
+    ): Promise<void> {
+        const wrapper = this.player as { instance?: unknown } | null;
+        const instance = wrapper?.instance ?? wrapper;
+        if (instance instanceof AlphaSynthWebWorkerApi) {
+            await instance.loadSoundFontBankAsync(soundFonts, options);
+            return;
+        }
+        if (instance instanceof AlphaSynth) {
+            if (options.signal?.aborted) {
+                const error = new Error('SoundFont bank request was aborted');
+                error.name = 'AbortError';
+                throw error;
+            }
+            const parsed = soundFonts.map(AlphaSynth.parseSoundFont);
+            instance.loadSoundFontBank(parsed);
+            return;
+        }
+        throw new Error('The active player does not support transactional SoundFont banks');
     }
 
     /**

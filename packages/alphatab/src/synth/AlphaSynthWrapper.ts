@@ -239,6 +239,14 @@ export class AlphaSynthWrapper implements IAlphaSynth {
         return this._instance ? this._instance!.timePosition : 0;
     }
 
+    public get transportTimePosition(): number {
+        return this._instance ? this._instance.transportTimePosition : 0;
+    }
+
+    public get transportGeneration(): number {
+        return this._instance ? this._instance.transportGeneration : 0;
+    }
+
     public set timePosition(value: number) {
         if (this._instance) {
             this._instance.timePosition = value;

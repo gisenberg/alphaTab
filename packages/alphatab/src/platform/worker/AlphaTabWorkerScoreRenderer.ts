@@ -1,12 +1,12 @@
 import type { AlphaTabApiBase } from '@coderline/alphatab/AlphaTabApiBase';
 import { Environment } from '@coderline/alphatab/Environment';
+import { JsonConverter } from '@coderline/alphatab/model/JsonConverter';
 import {
     EventEmitter,
     EventEmitterOfT,
     type IEventEmitter,
     type IEventEmitterOfT
 } from '@coderline/alphatab/EventEmitter';
-import { JsonConverter } from '@coderline/alphatab/model/JsonConverter';
 import type { Score } from '@coderline/alphatab/model/Score';
 import { FontSizes } from '@coderline/alphatab/platform/svg/FontSizes';
 import type {
@@ -17,6 +17,7 @@ import type { IScoreRenderer, RenderHints } from '@coderline/alphatab/rendering/
 import type { RenderFinishedEventArgs } from '@coderline/alphatab/rendering/RenderFinishedEventArgs';
 import { BoundsLookup } from '@coderline/alphatab/rendering/utils/BoundsLookup';
 import type { Settings } from '@coderline/alphatab/Settings';
+import { WorkerScoreCompilationCache } from '@coderline/alphatab/platform/worker/WorkerScoreCompilation';
 
 /**
  * @internal
@@ -25,6 +26,7 @@ export class AlphaTabWorkerScoreRenderer<T> implements IScoreRenderer {
     private _api: AlphaTabApiBase<T>;
     private _worker!: IAlphaTabRenderingWorker;
     private _width: number = 0;
+    private _sentCompilationId: number = 0;
 
     public boundsLookup: BoundsLookup | null = null;
 
@@ -119,15 +121,19 @@ export class AlphaTabWorkerScoreRenderer<T> implements IScoreRenderer {
     }
 
     public renderScore(score: Score | null, trackIndexes: number[] | null, renderHints?: RenderHints): void {
-        const jsObject: Map<string, unknown> | null =
-            score == null ? null : JsonConverter.scoreToJsObject(Environment.prepareForPostMessage(score));
+        const compilation = score
+            ? WorkerScoreCompilationCache.getOrCompileScore(score, renderHints?.firstChangedMasterBar !== undefined)
+            : null;
+        const shouldSendScore = !compilation || compilation.id !== this._sentCompilationId;
         this._worker.postMessage({
             cmd: 'alphaTab.renderScore',
-            score: jsObject,
+            compilationId: compilation?.id ?? 0,
+            score: shouldSendScore ? (compilation?.scoreData ?? null) : undefined,
             trackIndexes: Environment.prepareForPostMessage(trackIndexes),
             fontSizes: FontSizes.fontSizeLookupTables,
             renderHints
         });
+        this._sentCompilationId = compilation?.id ?? 0;
     }
 
     public readonly preRender: IEventEmitterOfT<boolean> = new EventEmitterOfT<boolean>();

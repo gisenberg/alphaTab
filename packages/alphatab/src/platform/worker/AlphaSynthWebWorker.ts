@@ -1,4 +1,3 @@
-import { Environment } from '@coderline/alphatab/Environment';
 import { Logger } from '@coderline/alphatab/Logger';
 import { JsonConverter } from '@coderline/alphatab/model/JsonConverter';
 import { AlphaSynthWorkerSynthOutput } from '@coderline/alphatab/platform/worker/AlphaSynthWorkerSynthOutput';
@@ -22,6 +21,10 @@ export class AlphaSynthWebWorker {
     private _player!: AlphaSynth;
     private _main: IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>;
     private _exporter: Map<number, IAlphaSynthAudioExporter> = new Map<number, IAlphaSynthAudioExporter>();
+    private _activeSoundFontRequest?: { requestId?: number; generation?: number; cacheKeys?: string[] };
+    private _cancelledOperations: Set<number> = new Set<number>();
+    private _soundFontCache: Map<string, ReturnType<typeof AlphaSynth.parseSoundFont>> = new Map();
+    private _output!: AlphaSynthWorkerSynthOutput;
 
     public constructor(main: IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>) {
         this._main = main;
@@ -29,23 +32,21 @@ export class AlphaSynthWebWorker {
     }
 
     public static init(): void {
-        new AlphaSynthWebWorker(Environment.getGlobalWorkerScope<IAlphaSynthWorkerMessage>());
+        new AlphaSynthWebWorker(globalThis as unknown as IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>);
     }
 
     public handleMessage(e: MessageEvent<IAlphaSynthWorkerMessage>): void {
         const data = e.data;
         const cmd = data.cmd;
-        if(!cmd) {
+        if (!cmd) {
             return;
         }
         switch (cmd) {
             case 'alphaSynth.initialize':
                 AlphaSynthWorkerSynthOutput.preferredSampleRate = data.sampleRate;
                 Logger.logLevel = data.logLevel;
-                this._player = new AlphaSynth(
-                    new AlphaSynthWorkerSynthOutput(this._main),
-                    data.bufferTimeInMilliseconds
-                );
+                this._output = new AlphaSynthWorkerSynthOutput(this._main, data.sharedSampleBuffer);
+                this._player = new AlphaSynth(this._output, data.bufferTimeInMilliseconds);
                 this._player.positionChanged.on(e => this.onPositionChanged(e));
                 this._player.stateChanged.on(e => this.onPlayerStateChanged(e));
                 this._player.finished.on(() => this.onFinished());
@@ -60,6 +61,9 @@ export class AlphaSynthWebWorker {
                     cmd: 'alphaSynth.ready'
                 });
 
+                break;
+            case 'alphaSynth.output.attachWorkletPort':
+                this._output.attachDirectPort(data.port);
                 break;
             case 'alphaSynth.setLogLevel':
                 Logger.logLevel = data.value;
@@ -107,7 +111,48 @@ export class AlphaSynthWebWorker {
                 this._player.playOneTimeMidiFile(JsonConverter.jsObjectToMidiFile(data.midi));
                 break;
             case 'alphaSynth.loadSoundFontBytes':
+                this._activeSoundFontRequest = {
+                    requestId: data.requestId,
+                    generation: data.generation
+                };
                 this._player.loadSoundFont(data.data, data.append);
+                this._activeSoundFontRequest = undefined;
+                break;
+            case 'alphaSynth.replaceSoundFontBank':
+                if (this._cancelledOperations.delete(data.requestId)) {
+                    this._main.postMessage({
+                        cmd: 'alphaSynth.operationCancelled',
+                        requestId: data.requestId,
+                        generation: data.generation
+                    });
+                    break;
+                }
+                this._activeSoundFontRequest = {
+                    requestId: data.requestId,
+                    generation: data.generation,
+                    cacheKeys: data.soundFonts.map(soundFont => soundFont.cacheKey)
+                };
+                try {
+                    const parsed = data.soundFonts.map(soundFont => {
+                        let cached = this._soundFontCache.get(soundFont.cacheKey);
+                        if (!cached) {
+                            if (!soundFont.data) {
+                                throw new Error(`SoundFont cache miss for ${soundFont.cacheKey}`);
+                            }
+                            cached = AlphaSynth.parseSoundFont(soundFont.data);
+                            this._soundFontCache.set(soundFont.cacheKey, cached);
+                        }
+                        return cached;
+                    });
+                    this._player.loadSoundFontBank(parsed);
+                } catch (e) {
+                    this.onSoundFontLoadFailed(e);
+                } finally {
+                    this._activeSoundFontRequest = undefined;
+                }
+                break;
+            case 'alphaSynth.cancelOperation':
+                this._cancelledOperations.add(data.requestId);
                 break;
             case 'alphaSynth.resetSoundFonts':
                 this._player.resetSoundFonts();
@@ -148,7 +193,7 @@ export class AlphaSynthWebWorker {
     private _handleExporterMessage(ev: MessageEvent<IAlphaSynthWorkerMessage>) {
         const data = ev.data;
         const cmd = data.cmd;
-        let exporter:IAlphaSynthAudioExporter|undefined = undefined;
+        let exporter: IAlphaSynthAudioExporter | undefined = undefined;
         let exporterId = 0;
         try {
             switch (cmd) {
@@ -223,15 +268,22 @@ export class AlphaSynthWebWorker {
     }
 
     public onSoundFontLoaded(): void {
+        const request = this._activeSoundFontRequest;
         this._main.postMessage({
-            cmd: 'alphaSynth.soundFontLoaded'
+            cmd: 'alphaSynth.soundFontLoaded',
+            requestId: request?.requestId,
+            generation: request?.generation,
+            cacheKeys: request?.cacheKeys
         });
     }
 
     public onSoundFontLoadFailed(e: any): void {
+        const request = this._activeSoundFontRequest;
         this._main.postMessage({
             cmd: 'alphaSynth.soundFontLoadFailed',
-            error: e
+            error: e,
+            requestId: request?.requestId,
+            generation: request?.generation
         });
     }
 

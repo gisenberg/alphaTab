@@ -117,6 +117,22 @@ export interface CoreSettingsJson {
      */
     enableLazyLoading?: boolean;
     /**
+     * Maximum number of offscreen rendered tiles kept detached for fast scroll-back.
+     * Tiles beyond this LRU budget are discarded and rendered again when needed.
+     * @defaultValue `8`
+     * @category Core
+     * @target web
+     */
+    lazyLoadingCacheSize?: number;
+    /**
+     * Maximum number of DOM elements retained across all detached score tiles.
+     * This is a second hard bound for unusually complex systems.
+     * @defaultValue `4000`
+     * @category Core
+     * @target web
+     */
+    lazyLoadingCacheElementLimit?: number;
+    /**
      * The engine which should be used to render the the tablature.
      * @remarks
      * AlphaTab can use various render engines to draw the music notation. The available render engines is specific to the platform. Please refer to the table below to find out which engines are available on which platform.

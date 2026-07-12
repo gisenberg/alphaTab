@@ -41,6 +41,10 @@ export class CoreSettingsSerializer {
         /*@target web*/
         o.set("tracks", obj.tracks);
         o.set("enablelazyloading", obj.enableLazyLoading);
+        /*@target web*/
+        o.set("lazyloadingcachesize", obj.lazyLoadingCacheSize);
+        /*@target web*/
+        o.set("lazyloadingcacheelementlimit", obj.lazyLoadingCacheElementLimit);
         o.set("engine", obj.engine);
         o.set("loglevel", obj.logLevel as number);
         o.set("useworkers", obj.useWorkers);
@@ -78,6 +82,14 @@ export class CoreSettingsSerializer {
                 return true;
             case "enablelazyloading":
                 obj.enableLazyLoading = v! as boolean;
+                return true;
+            /*@target web*/
+            case "lazyloadingcachesize":
+                obj.lazyLoadingCacheSize = v! as number;
+                return true;
+            /*@target web*/
+            case "lazyloadingcacheelementlimit":
+                obj.lazyLoadingCacheElementLimit = v! as number;
                 return true;
             case "engine":
                 obj.engine = v! as string;

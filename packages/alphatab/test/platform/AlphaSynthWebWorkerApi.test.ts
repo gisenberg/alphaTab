@@ -2,9 +2,35 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventEmitterOfT } from '@coderline/alphatab/EventEmitter';
 import { Settings } from '@coderline/alphatab/Settings';
 import { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
-import { AlphaSynthWebWorkerApi } from '@coderline/alphatab/platform/worker/AlphaSynthWebWorkerApi';
-import type { IAlphaSynthWorker } from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
+import {
+    AlphaSynthWebWorkerApi,
+    SoundFontBankSupersededError
+} from '@coderline/alphatab/platform/worker/AlphaSynthWebWorkerApi';
+import type {
+    IAlphaSynthWorker,
+    IAlphaSynthWorkerMessage
+} from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
 import { TestOutput } from 'test/audio/TestOutput';
+
+class FakeSynthWorker implements IAlphaSynthWorker {
+    public readonly postedMessages: IAlphaSynthWorkerMessage[] = [];
+    private _listener?: (event: MessageEvent<IAlphaSynthWorkerMessage>) => void;
+
+    public postMessage(message: IAlphaSynthWorkerMessage): void {
+        this.postedMessages.push(message);
+    }
+
+    public addEventListener(_event: 'message', handler: (event: MessageEvent<IAlphaSynthWorkerMessage>) => void): void {
+        this._listener = handler;
+    }
+
+    public removeEventListener(): void {}
+    public terminate(): void {}
+
+    public dispatch(message: IAlphaSynthWorkerMessage): void {
+        this._listener?.({ data: message } as MessageEvent<IAlphaSynthWorkerMessage>);
+    }
+}
 
 describe('AlphaSynthWebWorkerApi', () => {
     it('returns the last loaded MIDI metadata without recursing', () => {
@@ -32,5 +58,54 @@ describe('AlphaSynthWebWorkerApi', () => {
         playbackFailed.trigger(new Error('audio output failed'));
 
         expect(postMessage).toHaveBeenCalledWith({ cmd: 'alphaSynth.pause' });
+    });
+
+    it('correlates an atomic SoundFont bank response to its request', async () => {
+        const worker = new FakeSynthWorker();
+        const api = new AlphaSynthWebWorkerApi(new TestOutput(), new Settings(), worker);
+
+        const operation = api.loadSoundFontBankAsync([new Uint8Array([1, 2, 3])]);
+        await vi.waitFor(() => {
+            expect(worker.postedMessages.some(message => message.cmd === 'alphaSynth.replaceSoundFontBank')).toBe(true);
+        });
+        const request = worker.postedMessages.find(message => message.cmd === 'alphaSynth.replaceSoundFontBank');
+        if (!request || request.cmd !== 'alphaSynth.replaceSoundFontBank') {
+            throw new Error('missing SoundFont bank request');
+        }
+
+        worker.dispatch({
+            cmd: 'alphaSynth.soundFontLoaded',
+            requestId: request.requestId,
+            generation: request.generation,
+            cacheKeys: request.soundFonts.map(soundFont => soundFont.cacheKey)
+        });
+
+        await expect(operation).resolves.toBeUndefined();
+    });
+
+    it('supersedes an older bank request before it can become current', async () => {
+        const worker = new FakeSynthWorker();
+        const api = new AlphaSynthWebWorkerApi(new TestOutput(), new Settings(), worker);
+
+        const older = api.loadSoundFontBankAsync([new Uint8Array([1])]);
+        const newer = api.loadSoundFontBankAsync([new Uint8Array([2])]);
+
+        await expect(older).rejects.toBeInstanceOf(SoundFontBankSupersededError);
+        await vi.waitFor(() => {
+            expect(
+                worker.postedMessages.filter(message => message.cmd === 'alphaSynth.replaceSoundFontBank')
+            ).toHaveLength(1);
+        });
+        const request = worker.postedMessages.find(message => message.cmd === 'alphaSynth.replaceSoundFontBank');
+        if (!request || request.cmd !== 'alphaSynth.replaceSoundFontBank') {
+            throw new Error('missing replacement request');
+        }
+        worker.dispatch({
+            cmd: 'alphaSynth.soundFontLoaded',
+            requestId: request.requestId,
+            generation: request.generation,
+            cacheKeys: request.soundFonts.map(soundFont => soundFont.cacheKey)
+        });
+        await expect(newer).resolves.toBeUndefined();
     });
 });

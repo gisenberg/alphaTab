@@ -3,6 +3,7 @@ import {
     calculateWebAudioBufferCount,
     calculateWebAudioRequestBufferCount,
     SamplesPlayedReporter,
+    SynthOutputDiagnosticsTracker,
     WebAudioSamplesPlayedReportIntervalFrames,
     writeInterleavedStereoSamples
 } from '@coderline/alphatab/platform/javascript/WebAudioSampleBuffer';
@@ -53,5 +54,51 @@ describe('WebAudioSampleBuffer', () => {
             expect(reporter.update(0, 128)).toBeUndefined();
         }
         expect(reporter.update(0, 128)).toBe(0);
+    });
+
+    it('tracks underruns, dropped frames, buffer depth, and resets cumulative counters', () => {
+        const tracker = new SynthOutputDiagnosticsTracker('audio-worklet', 48000, 4096);
+
+        tracker.recordBufferDepth(3072);
+        expect(tracker.recordOutput(128, 128)).toBe(false);
+        expect(tracker.recordOutput(32, 128)).toBe(true);
+        expect(tracker.recordDroppedFrames(64)).toBe(true);
+        tracker.recordBufferDepth(1024);
+
+        expect(tracker.snapshot).toEqual({
+            outputMode: 'audio-worklet',
+            sampleRate: 48000,
+            bufferCapacityFrames: 4096,
+            bufferedFrames: 1024,
+            peakBufferedFrames: 3072,
+            outputFrames: 256,
+            underrunCount: 1,
+            underrunFrames: 96,
+            droppedFrames: 64,
+            playbackFailureCount: 0,
+            lastPlaybackFailure: null
+        });
+
+        tracker.reset();
+        expect(tracker.snapshot).toMatchObject({
+            bufferedFrames: 1024,
+            peakBufferedFrames: 1024,
+            outputFrames: 0,
+            underrunCount: 0,
+            underrunFrames: 0,
+            droppedFrames: 0
+        });
+    });
+
+    it('can exclude an expected final-buffer tail from underrun counters', () => {
+        const tracker = new SynthOutputDiagnosticsTracker('audio-worklet', 44100, 2048);
+
+        tracker.recordOutput(24, 24, false);
+
+        expect(tracker.snapshot).toMatchObject({
+            outputFrames: 24,
+            underrunCount: 0,
+            underrunFrames: 0
+        });
     });
 });

@@ -36,6 +36,7 @@ import type {
 } from '@coderline/alphatab/midi/MidiEvent';
 import { MidiFile } from '@coderline/alphatab/midi/MidiFile';
 import { MidiFileGenerator } from '@coderline/alphatab/midi/MidiFileGenerator';
+import { WorkerScoreCompilationCache } from '@coderline/alphatab/platform/worker/WorkerScoreCompilation';
 import {
     type MidiTickLookup,
     type MidiTickLookupFindBeatResult,
@@ -1520,6 +1521,14 @@ export class AlphaTabApiBase<TSettings> {
         return this._player.timePosition;
     }
 
+    /**
+     * Gets the monotonic playback time between batched player position events.
+     * Use this for animation and external capture synchronization.
+     */
+    public get transportTimePosition(): number {
+        return this._player.instance?.transportTimePosition ?? this._player.timePosition;
+    }
+
     public set timePosition(value: number) {
         this._player.timePosition = value;
     }
@@ -1744,6 +1753,7 @@ export class AlphaTabApiBase<TSettings> {
         generator.applyTranspositionPitches = false;
 
         generator.generate();
+        WorkerScoreCompilationCache.compile(score, midiFile);
         this._tickCache = generator.tickLookup;
         this._tickCache.playbackRange = this.playbackRange;
 

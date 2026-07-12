@@ -10,12 +10,16 @@ import type { IAudioSampleSynthesizer } from '@coderline/alphatab/synth/IAudioSa
 import type { ISynthOutput } from '@coderline/alphatab/synth/ISynthOutput';
 import type { Hydra } from '@coderline/alphatab/synth/soundfont/Hydra';
 import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
+import type { AlphaTabMetronomeEvent } from '@coderline/alphatab/midi/MidiEvent';
+import type { TransportClock } from '@coderline/alphatab/synth/TransportClock';
 
 /**
  * A synth output for playing backing tracks.
  * @public
  */
 export interface IBackingTrackSynthOutput extends ISynthOutput {
+    /** The monotonic clock used for media, cursor and auxiliary-audio scheduling. */
+    readonly transportClock?: TransportClock;
     /**
      * An event fired when the playback time changes. The time is in absolute milliseconds.
      */
@@ -43,6 +47,12 @@ export interface IBackingTrackSynthOutput extends ISynthOutput {
      * @param backingTrack The backing track to load.
      */
     loadBackingTrack(backingTrack: BackingTrack): void;
+
+    /** Schedules a metronome click on the same transport as the backing track. */
+    scheduleMetronomeClick?(backingTrackTime: number, accent: boolean, volume: number): void;
+
+    /** Cancels metronome clicks which have not reached the output yet. */
+    cancelScheduledMetronomeClicks?(): void;
 }
 
 /**
@@ -59,6 +69,7 @@ class BackingTrackAudioSynthesizer implements IAudioSampleSynthesizer {
     public timeSignatureDenominator: number = 4;
     public activeVoiceCount: number = 0;
     public output!: IBackingTrackSynthOutput;
+    public mainTimeToBackingTrack: (time: number) => number = time => time;
 
     public noteOffAll(_immediate: boolean): void {
         // not supported, ignore
@@ -104,7 +115,12 @@ class BackingTrackAudioSynthesizer implements IAudioSampleSynthesizer {
         while (!this._midiEventQueue.isEmpty) {
             const m: SynthEvent = this._midiEventQueue.dequeue()!;
             if (m.isMetronome && this.metronomeVolume > 0) {
-                // ignore metronome
+                const metronome = m.event as AlphaTabMetronomeEvent;
+                this.output.scheduleMetronomeClick?.(
+                    this.mainTimeToBackingTrack(m.time),
+                    metronome.metronomeNumerator === 0,
+                    this.metronomeVolume
+                );
             } else if (m.event) {
                 this._processMidiMessage(m.event);
             }
@@ -143,10 +159,14 @@ class BackingTrackAudioSynthesizer implements IAudioSampleSynthesizer {
  * @internal
  */
 export class BackingTrackPlayer extends AlphaSynthBase {
+    private static readonly _metronomeLookaheadMilliseconds: number = 150;
     private _backingTrackOutput: IBackingTrackSynthOutput;
     constructor(backingTrackOutput: IBackingTrackSynthOutput, bufferTimeInMilliseconds: number) {
         super(backingTrackOutput, new BackingTrackAudioSynthesizer(), bufferTimeInMilliseconds);
-        (this.synthesizer as BackingTrackAudioSynthesizer).output = backingTrackOutput;
+        const backingTrackSynthesizer = this.synthesizer as BackingTrackAudioSynthesizer;
+        backingTrackSynthesizer.output = backingTrackOutput;
+        backingTrackSynthesizer.mainTimeToBackingTrack = time =>
+            this.sequencer.mainTimePositionToBackingTrack(time, backingTrackOutput.backingTrackDuration);
         this._backingTrackOutput = backingTrackOutput;
 
         backingTrackOutput.timeUpdate.on(timePosition => {
@@ -155,8 +175,12 @@ export class BackingTrackPlayer extends AlphaSynthBase {
                 backingTrackOutput.backingTrackDuration
             );
 
-            this.sequencer.fillMidiEventQueueToEndTime(alphaTabTimePosition);
-            (this.synthesizer as BackingTrackAudioSynthesizer).fakeSynthesize();
+            const scheduleTo = Math.min(
+                this.sequencer.currentEndTime,
+                alphaTabTimePosition + BackingTrackPlayer._metronomeLookaheadMilliseconds
+            );
+            this.sequencer.fillMidiEventQueueToEndTime(scheduleTo);
+            backingTrackSynthesizer.fakeSynthesize();
 
             this.updateTimePosition(alphaTabTimePosition, false);
             this.checkForFinish();
@@ -188,6 +212,7 @@ export class BackingTrackPlayer extends AlphaSynthBase {
     protected override updateTimePosition(timePosition: number, isSeek: boolean): void {
         super.updateTimePosition(timePosition, isSeek);
         if (isSeek) {
+            this._backingTrackOutput.cancelScheduledMetronomeClicks?.();
             this._backingTrackOutput.seekTo(
                 this.sequencer.mainTimePositionToBackingTrack(
                     timePosition,

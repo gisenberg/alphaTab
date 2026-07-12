@@ -13,7 +13,7 @@ import type { Font } from '@coderline/alphatab/model/Font';
 import { GolpeType } from '@coderline/alphatab/model/GolpeType';
 import { HarmonicType } from '@coderline/alphatab/model/HarmonicType';
 import type { ICanvas } from '@coderline/alphatab/platform/ICanvas';
-import { AlphaSynthWebWorklet } from '@coderline/alphatab/platform/javascript/AlphaSynthAudioWorkletOutput';
+import { AlphaSynthWebWorklet } from '@coderline/alphatab/platform/javascript/AlphaSynthWebWorklet';
 import { BrowserUiFacade } from '@coderline/alphatab/platform/javascript/BrowserUiFacade';
 import { Html5Canvas } from '@coderline/alphatab/platform/javascript/Html5Canvas';
 import { JQueryAlphaTab } from '@coderline/alphatab/platform/javascript/JQueryAlphaTab';

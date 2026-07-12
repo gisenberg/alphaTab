@@ -116,6 +116,17 @@ describe('WebAudioOutput', () => {
 
         expect(failed).toHaveBeenCalledWith(failure);
         expect(source.disconnect).toHaveBeenCalledOnce();
+        expect(output.playbackDiagnostics).toMatchObject({
+            outputMode: 'unknown',
+            playbackFailureCount: 1,
+            lastPlaybackFailure: failure.message
+        });
+
+        output.resetPlaybackDiagnostics();
+        expect(output.playbackDiagnostics).toMatchObject({
+            playbackFailureCount: 0,
+            lastPlaybackFailure: null
+        });
     });
 
     it('only stops a Web Audio source after it has started', () => {

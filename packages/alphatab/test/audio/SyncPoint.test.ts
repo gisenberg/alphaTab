@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { type IEventEmitterOfT, type IEventEmitter, EventEmitterOfT, EventEmitter } from '@coderline/alphatab/EventEmitter';
+import {
+    type IEventEmitterOfT,
+    type IEventEmitter,
+    EventEmitterOfT,
+    EventEmitter
+} from '@coderline/alphatab/EventEmitter';
 import { ScoreLoader } from '@coderline/alphatab/importer/ScoreLoader';
 import { AlphaSynthMidiFileHandler } from '@coderline/alphatab/midi/AlphaSynthMidiFileHandler';
 import { MidiFile } from '@coderline/alphatab/midi/MidiFile';
@@ -216,6 +221,21 @@ describe('SyncPointTests', () => {
         expect(events.map(e => `${e.currentTime},${e.originalTempo},${e.modifiedTempo}`)).toMatchSnapshot();
     });
 
+    it('schedules backing-track metronome clicks ahead on the media transport', async () => {
+        const player = await prepareBackingTrackPlayer();
+        player.metronomeVolume = 0.75;
+        player.play();
+
+        const output = player.output as TestBackingTrackOutput;
+        output.playThroughSong(0, 2500, 50);
+
+        expect(output.scheduledClicks.length).toBeGreaterThan(1);
+        expect(
+            output.scheduledClicks.every((click, index, all) => index === 0 || click.time >= all[index - 1].time)
+        ).toBe(true);
+        expect(output.scheduledClicks.every(click => click.volume === 0.75)).toBe(true);
+    });
+
     it('seek-normal-backing-track', async () => {
         const player = await prepareBackingTrackPlayer();
 
@@ -363,6 +383,7 @@ describe('SyncPointTests', () => {
  */
 class TestBackingTrackOutput implements IBackingTrackSynthOutput {
     public seekTimes: number[] = [];
+    public scheduledClicks: { time: number; accent: boolean; volume: number }[] = [];
 
     public simulateSeek(time: number) {
         (this.timeUpdate as EventEmitterOfT<number>).trigger(time);
@@ -385,6 +406,12 @@ class TestBackingTrackOutput implements IBackingTrackSynthOutput {
         this.seekTimes.push(time);
     }
     public loadBackingTrack(_backingTrack: BackingTrack): void {}
+    public scheduleMetronomeClick(time: number, accent: boolean, volume: number): void {
+        this.scheduledClicks.push({ time, accent, volume });
+    }
+    public cancelScheduledMetronomeClicks(): void {
+        this.scheduledClicks = [];
+    }
     public sampleRate: number = 44100;
 
     public open(_bufferTimeInMilliseconds: number): void {

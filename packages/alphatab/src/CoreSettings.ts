@@ -69,7 +69,7 @@ export class CoreSettings {
      * where the Web Font files of [Bravura](https://github.com/steinbergmedia/bravura) are. Normally alphaTab expects
      * them to be in a `font` subfolder beside the script file. If this is not the case, this setting must be used to configure the path.
      * Alternatively also a global variable `ALPHATAB_FONT` can be set on the page before initializing alphaTab.
-     * 
+     *
      * Use {@link smuflFontSources} for more flexible font configuration.
      * @defaultValue `"${AlphaTabScriptFolder}/font/"`
      * @category Core - JavaScript Specific
@@ -82,14 +82,14 @@ export class CoreSettings {
      * Defines the URLs from which to load the SMuFL compliant font files.
      * @remarks
      * These sources will be used to load and register the webfonts on the page so
-     * they are available for rendering the music sheet. The sources can be set to any 
+     * they are available for rendering the music sheet. The sources can be set to any
      * CSS compatible URL which can be passed into `url()`.
      * See https://developer.mozilla.org/en-US/docs/Web/CSS/@font-face/src#url
-     * 
-     * If you customize the SmuFL font used in alphaTab, you will also need to provide 
-     * the respective SMuFL Metadata information to alphaTab. 
+     *
+     * If you customize the SmuFL font used in alphaTab, you will also need to provide
+     * the respective SMuFL Metadata information to alphaTab.
      * Set the metadata via {@link EngravingSettings.fillFromSmufl} on the rendering resources.
-     * 
+     *
      * @defaultValue Bravura files located at {@link fontDirectory} .
      * @category Core - JavaScript Specific
      * @target web
@@ -172,6 +172,24 @@ export class CoreSettings {
      * @since 0.9.6
      */
     public enableLazyLoading: boolean = true;
+
+    /**
+     * Maximum number of offscreen rendered tiles kept detached for fast scroll-back.
+     * Tiles beyond this LRU budget are discarded and rendered again when needed.
+     * @defaultValue `8`
+     * @category Core
+     * @target web
+     */
+    public lazyLoadingCacheSize: number = 8;
+
+    /**
+     * Maximum number of DOM elements retained across all detached score tiles.
+     * This is a second hard bound for unusually complex systems.
+     * @defaultValue `4000`
+     * @category Core
+     * @target web
+     */
+    public lazyLoadingCacheElementLimit: number = 4000;
 
     /**
      * The engine which should be used to render the the tablature.

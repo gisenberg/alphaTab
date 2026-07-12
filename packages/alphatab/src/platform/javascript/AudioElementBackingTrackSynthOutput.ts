@@ -9,6 +9,7 @@ import type { BackingTrack } from '@coderline/alphatab/model/BackingTrack';
 import { WebAudioHelper } from '@coderline/alphatab/platform/javascript/AlphaSynthWebAudioOutputBase';
 import type { IBackingTrackSynthOutput } from '@coderline/alphatab/synth/BackingTrackPlayer';
 import type { ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
+import { TransportClock } from '@coderline/alphatab/synth/TransportClock';
 
 /**
  * A {@link IBackingTrackSynthOutput} which uses a HTMLAudioElement as playback mechanism.
@@ -37,6 +38,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _updateInterval: number = 0;
     private _objectUrl: string | null = null;
     private _playGeneration: number = 0;
+    private _clickContext: AudioContext | null = null;
+    private _scheduledClicks: Set<OscillatorNode> = new Set<OscillatorNode>();
+    public readonly transportClock: TransportClock = new TransportClock(() => performance.now());
 
     public get backingTrackDuration(): number {
         const duration = this.audioElement.duration ?? 0;
@@ -49,6 +53,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public set playbackRate(value: number) {
         this.audioElement.playbackRate = value;
+        this.transportClock.setPlaybackRate(value);
     }
 
     public get masterVolume(): number {
@@ -60,6 +65,8 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public seekTo(time: number): void {
+        this.cancelScheduledMetronomeClicks();
+        this.transportClock.seek(time);
         this.audioElement.currentTime = time / 1000;
     }
 
@@ -91,6 +98,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     private _updatePosition() {
         const timePos = this.audioElement.currentTime * 1000;
+        this.transportClock.observe(timePos);
         (this.timeUpdate as EventEmitterOfT<number>).trigger(timePos);
     }
 
@@ -103,6 +111,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
                 Logger.warning('WebAudio', `Backing track playback failed: reason=${reason}`);
             }
         });
+        this.transportClock.start(this.audioElement.currentTime * 1000);
         this._updateInterval = window.setInterval(() => {
             this._updatePosition();
         }, 50);
@@ -116,11 +125,19 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
             audioElement.remove();
         }
         this._revokeObjectUrl();
+        this.cancelScheduledMetronomeClicks();
+        const clickContext = this._clickContext;
+        this._clickContext = null;
+        if (clickContext) {
+            void clickContext.close();
+        }
     }
 
     public pause(): void {
         this._playGeneration++;
         this.audioElement.pause();
+        this.transportClock.pause(this.audioElement.currentTime * 1000);
+        this.cancelScheduledMetronomeClicks();
         this._clearUpdateInterval();
     }
 
@@ -142,10 +159,60 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         // nobody will call this
     }
     public resetSamples(): void {
-        // nobody will call this
+        this.cancelScheduledMetronomeClicks();
     }
     public activate(): void {
-        // nobody will call this
+        const context = this._ensureClickContext();
+        if (context.state === 'suspended') {
+            void context.resume();
+        }
+    }
+
+    public scheduleMetronomeClick(backingTrackTime: number, accent: boolean, volume: number): void {
+        const context = this._ensureClickContext();
+        const delay = (backingTrackTime - this.transportClock.position) / 1000;
+        if (delay < -0.08) {
+            return;
+        }
+
+        const startAt = context.currentTime + Math.max(0, delay);
+        const stopAt = startAt + (accent ? 0.045 : 0.032);
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(accent ? 1760 : 1175, startAt);
+        const peak = Math.min(1, Math.max(0, volume * this.masterVolume)) * (accent ? 0.3 : 0.22);
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak), startAt + 0.002);
+        gain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.addEventListener('ended', () => {
+            this._scheduledClicks.delete(oscillator);
+            oscillator.disconnect();
+            gain.disconnect();
+        });
+        this._scheduledClicks.add(oscillator);
+        oscillator.start(startAt);
+        oscillator.stop(stopAt);
+    }
+
+    public cancelScheduledMetronomeClicks(): void {
+        for (const oscillator of this._scheduledClicks) {
+            try {
+                oscillator.stop();
+            } catch {
+                // The click might already have stopped between iteration and cancellation.
+            }
+        }
+        this._scheduledClicks.clear();
+    }
+
+    private _ensureClickContext(): AudioContext {
+        if (!this._clickContext) {
+            this._clickContext = new AudioContext({ sampleRate: 44100 });
+        }
+        return this._clickContext;
     }
 
     public readonly ready: IEventEmitter = new EventEmitter();
@@ -166,6 +233,15 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
             await this.audioElement.setSinkId('');
         } else {
             await this.audioElement.setSinkId(device.deviceId);
+        }
+
+        const clickContext = this._clickContext as
+            | (AudioContext & {
+                  setSinkId?: (sinkId: string) => Promise<void>;
+              })
+            | null;
+        if (clickContext?.setSinkId) {
+            await clickContext.setSinkId(device?.deviceId ?? '');
         }
     }
 

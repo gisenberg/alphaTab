@@ -33,6 +33,7 @@ import { SynthConstants } from '@coderline/alphatab/synth/SynthConstants';
 import type { Preset } from '@coderline/alphatab/synth/synthesis/Preset';
 import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
 import { TinySoundFont } from '@coderline/alphatab/synth/synthesis/TinySoundFont';
+import { TransportClock } from '@coderline/alphatab/synth/TransportClock';
 
 /**
  * This is the base class for synthesizer components which can be used to
@@ -65,6 +66,7 @@ export class AlphaSynthBase implements IAlphaSynth {
     private _output: ISynthOutput;
     private _loadedMidiInfo?: PositionChangedEventArgs;
     private _currentPosition: PositionChangedEventArgs = new PositionChangedEventArgs(0, 0, 0, 0, false, 120, 120);
+    private readonly _transportClock: TransportClock = new TransportClock();
 
     public get output(): ISynthOutput {
         return this._output;
@@ -147,6 +149,14 @@ export class AlphaSynthBase implements IAlphaSynth {
 
     public get currentPosition(): PositionChangedEventArgs {
         return this._currentPosition;
+    }
+
+    public get transportTimePosition(): number {
+        return this._transportClock.position;
+    }
+
+    public get transportGeneration(): number {
+        return this._transportClock.generation;
     }
 
     public get tickPosition(): number {
@@ -296,7 +306,8 @@ export class AlphaSynthBase implements IAlphaSynth {
                 samples = samples.subarray(0, bufferPos);
             }
             this._notPlayedSamples += samples.length;
-            this.output.addSamples(samples);
+            const isFinal = this.sequencer.isFinished && this.synthesizer.activeVoiceCount === 0;
+            this.output.addSamples(samples, isFinal);
 
             // if the sequencer finished, we instantly force a noteOff on all
             // voices to complete playback and stop voices fast.
@@ -313,7 +324,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         } else {
             // Tell output that there is no data left for it.
             const samples: Float32Array = new Float32Array(0);
-            this.output.addSamples(samples);
+            this.output.addSamples(samples, true);
         }
     }
 
@@ -346,6 +357,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         this.synthesizer.setupMetronomeChannel(this.sequencer.metronomeChannel, this.metronomeVolume);
         this._synthStopping = false;
         this.state = PlayerState.Playing;
+        this._transportClock.start(this._timePosition);
         (this.stateChanged as EventEmitterOfT<PlayerStateChangedEventArgs>).trigger(
             new PlayerStateChangedEventArgs(this.state, false)
         );
@@ -357,6 +369,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         }
         Logger.debug('AlphaSynth', 'Pausing playback');
         this.state = PlayerState.Paused;
+        this._transportClock.pause(this._timePosition);
         (this.stateChanged as EventEmitterOfT<PlayerStateChangedEventArgs>).trigger(
             new PlayerStateChangedEventArgs(this.state, false)
         );
@@ -385,6 +398,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         }
         Logger.debug('AlphaSynth', 'Stopping playback');
         this.state = PlayerState.Paused;
+        this._transportClock.pause(this._timePosition);
         this.output.pause();
         this._notPlayedSamples = 0;
         this.sequencer.stop();
@@ -429,14 +443,35 @@ export class AlphaSynthBase implements IAlphaSynth {
 
     private _loadedSoundFonts: Hydra[] = [];
 
+    /**
+     * Parses one SoundFont without mutating live player state.
+     * @internal
+     */
+    public static parseSoundFont(data: Uint8Array): Hydra {
+        const input: ByteBuffer = ByteBuffer.fromBuffer(data);
+        const soundFont: Hydra = new Hydra();
+        soundFont.load(input);
+        return soundFont;
+    }
+
+    /**
+     * Atomically replaces the active SoundFont bank with already parsed layers.
+     * @internal
+     */
+    public loadSoundFontBank(soundFonts: Hydra[]): void {
+        this.pause();
+        this._loadedSoundFonts = soundFonts.slice();
+        this.isSoundFontLoaded = soundFonts.length > 0;
+        (this.soundFontLoaded as EventEmitter).trigger();
+        this._checkReadyForPlayback();
+    }
+
     public loadSoundFont(data: Uint8Array, append: boolean): void {
         this.pause();
 
-        const input: ByteBuffer = ByteBuffer.fromBuffer(data);
         try {
             Logger.debug('AlphaSynth', 'Loading soundfont from bytes');
-            const soundFont: Hydra = new Hydra();
-            soundFont.load(input);
+            const soundFont = AlphaSynth.parseSoundFont(data);
             if (!append) {
                 this._loadedSoundFonts = [];
             }
@@ -624,6 +659,11 @@ export class AlphaSynthBase implements IAlphaSynth {
     }
 
     protected updateTimePosition(timePosition: number, isSeek: boolean): void {
+        if (isSeek) {
+            this._transportClock.seek(timePosition);
+        } else {
+            this._transportClock.observe(timePosition);
+        }
         // update the real positions
         this._timePosition = timePosition;
         const args = this._createPositionChangedEventArgs(isSeek);

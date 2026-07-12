@@ -1,4 +1,3 @@
-import { Environment } from '@coderline/alphatab/Environment';
 import { SettingsSerializer } from '@coderline/alphatab/generated/SettingsSerializer';
 import { Logger } from '@coderline/alphatab/Logger';
 import { JsonConverter } from '@coderline/alphatab/model/JsonConverter';
@@ -19,6 +18,8 @@ import type { Settings } from '@coderline/alphatab/Settings';
 export class AlphaTabWebWorker {
     private _renderer!: ScoreRenderer;
     private _main: IAlphaTabWorkerGlobalScope<IAlphaTabWorkerMessage>;
+    private _score: Score | null = null;
+    private _compilationId: number = 0;
 
     public constructor(main: IAlphaTabWorkerGlobalScope<IAlphaTabWorkerMessage>) {
         this._main = main;
@@ -26,7 +27,7 @@ export class AlphaTabWebWorker {
     }
 
     public static init(): void {
-        new AlphaTabWebWorker(Environment.getGlobalWorkerScope<IAlphaTabWorkerMessage>());
+        new AlphaTabWebWorker(globalThis as unknown as IAlphaTabWorkerGlobalScope<IAlphaTabWorkerMessage>);
     }
 
     private _handleMessage(e: MessageEvent<IAlphaTabWorkerMessage>): void {
@@ -60,7 +61,7 @@ export class AlphaTabWebWorker {
                 this._renderer.postRenderFinished.on(() => {
                     this._main.postMessage({
                         cmd: 'alphaTab.postRenderFinished',
-                        boundsLookup: this._renderer.boundsLookup?.toJson() ?? null
+                        boundsLookup: this._renderer.boundsLookup?.toCompact() ?? null
                     });
                 });
                 this._renderer.preRender.on(resize => {
@@ -86,9 +87,15 @@ export class AlphaTabWebWorker {
             case 'alphaTab.renderScore':
                 this._updateFontSizes(data.fontSizes);
                 const renderHints = data.renderHints;
-                const score =
-                    data.score == null ? null : JsonConverter.jsObjectToScore(data.score, this._renderer.settings);
-                this._renderMultiple(score, data.trackIndexes, renderHints);
+                if (data.score !== undefined) {
+                    this._score =
+                        data.score == null ? null : JsonConverter.jsObjectToScore(data.score, this._renderer.settings);
+                    this._compilationId = data.compilationId;
+                } else if (data.compilationId !== this._compilationId) {
+                    this._error(new Error(`Worker score compilation ${data.compilationId} is not available`));
+                    break;
+                }
+                this._renderMultiple(this._score, data.trackIndexes, renderHints);
                 break;
             case 'alphaTab.updateSettings':
                 this._updateSettings(data.settings);

@@ -1,4 +1,5 @@
 import type { IEventEmitter, IEventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import type { SynthOutputDiagnostics } from '@coderline/alphatab/synth/SynthOutputDiagnostics';
 
 /**
  * Represents a output device on which the synth can send the audio to.
@@ -56,7 +57,7 @@ export interface ISynthOutput {
      * Called when samples have been synthesized and should be added to the playback buffer.
      * @param samples
      */
-    addSamples(samples: Float32Array): void;
+    addSamples(samples: Float32Array, isFinal?: boolean): void;
 
     /**
      * Called when the samples in the output buffer should be reset. This is neeed for instance when seeking to another position.
@@ -87,6 +88,21 @@ export interface ISynthOutput {
      * Fired when the output cannot continue playback. Implementations may omit this event.
      */
     readonly playbackFailed?: IEventEmitterOfT<Error>;
+
+    /**
+     * The latest audio-output health snapshot when supported by the output.
+     */
+    readonly playbackDiagnostics?: SynthOutputDiagnostics;
+
+    /**
+     * Fired when a new audio-output health snapshot is available.
+     */
+    readonly playbackDiagnosticsChanged?: IEventEmitterOfT<SynthOutputDiagnostics>;
+
+    /**
+     * Resets cumulative audio-output health counters while preserving the current buffer depth.
+     */
+    resetPlaybackDiagnostics?(): void;
 
     /**
      * Loads and lists the available output devices. Will request permissions if needed.
