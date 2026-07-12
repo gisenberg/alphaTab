@@ -1,4 +1,9 @@
-import { EventEmitter, EventEmitterOfT, type IEventEmitter, type IEventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import {
+    EventEmitter,
+    EventEmitterOfT,
+    type IEventEmitter,
+    type IEventEmitterOfT
+} from '@coderline/alphatab/EventEmitter';
 import { Logger } from '@coderline/alphatab/Logger';
 import type { BackingTrack } from '@coderline/alphatab/model/BackingTrack';
 import { WebAudioHelper } from '@coderline/alphatab/platform/javascript/AlphaSynthWebAudioOutputBase';
@@ -30,6 +35,8 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public audioElement!: HTMLAudioElement;
     private _updateInterval: number = 0;
+    private _objectUrl: string | null = null;
+    private _playGeneration: number = 0;
 
     public get backingTrackDuration(): number {
         const duration = this.audioElement.duration ?? 0;
@@ -57,15 +64,14 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public loadBackingTrack(backingTrack: BackingTrack) {
-        if (this.audioElement?.src) {
-            URL.revokeObjectURL(this.audioElement.src);
-        }
+        this._revokeObjectUrl();
 
         const blob = new Blob([backingTrack.rawAudioFile! as Uint8Array<ArrayBuffer>]);
         // https://html.spec.whatwg.org/multipage/media.html#loading-the-media-resource
-        // Step 8. resets the playbackRate, we need to remember and restore it. 
+        // Step 8. resets the playbackRate, we need to remember and restore it.
         const playbackRate = this.audioElement.playbackRate;
-        this.audioElement.src = URL.createObjectURL(blob);
+        this._objectUrl = URL.createObjectURL(blob);
+        this.audioElement.src = this._objectUrl;
         this.audioElement.playbackRate = playbackRate;
     }
 
@@ -89,7 +95,14 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public play(): void {
-        this.audioElement.play();
+        const playGeneration = ++this._playGeneration;
+        this._clearUpdateInterval();
+        void this.audioElement.play().catch(reason => {
+            if (playGeneration === this._playGeneration) {
+                this._clearUpdateInterval();
+                Logger.warning('WebAudio', `Backing track playback failed: reason=${reason}`);
+            }
+        });
         this._updateInterval = window.setInterval(() => {
             this._updatePosition();
         }, 50);
@@ -97,13 +110,32 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     public destroy(): void {
         const audioElement = this.audioElement;
         if (audioElement) {
-            document.body.removeChild(audioElement);
+            this.pause();
+            audioElement.removeAttribute('src');
+            audioElement.load();
+            audioElement.remove();
         }
+        this._revokeObjectUrl();
     }
 
     public pause(): void {
+        this._playGeneration++;
         this.audioElement.pause();
-        window.clearInterval(this._updateInterval);
+        this._clearUpdateInterval();
+    }
+
+    private _clearUpdateInterval(): void {
+        if (this._updateInterval !== 0) {
+            window.clearInterval(this._updateInterval);
+            this._updateInterval = 0;
+        }
+    }
+
+    private _revokeObjectUrl(): void {
+        if (this._objectUrl) {
+            URL.revokeObjectURL(this._objectUrl);
+            this._objectUrl = null;
+        }
     }
 
     public addSamples(_samples: Float32Array): void {

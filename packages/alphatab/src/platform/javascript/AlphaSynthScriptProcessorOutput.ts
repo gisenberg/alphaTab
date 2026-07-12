@@ -1,6 +1,11 @@
 import { CircularSampleBuffer } from '@coderline/alphatab/synth/ds/CircularSampleBuffer';
 import { AlphaSynthWebAudioOutputBase } from '@coderline/alphatab/platform/javascript/AlphaSynthWebAudioOutputBase';
 import { SynthConstants } from '@coderline/alphatab/synth/SynthConstants';
+import {
+    calculateWebAudioBufferCount,
+    calculateWebAudioRequestBufferCount,
+    writeInterleavedStereoSamples
+} from '@coderline/alphatab/platform/javascript/WebAudioSampleBuffer';
 
 /**
  * This class implements a HTML5 Web Audio API based audio output device
@@ -16,8 +21,11 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
 
     public override open(bufferTimeInMilliseconds: number) {
         super.open(bufferTimeInMilliseconds);
-        this._bufferCount = Math.floor(
-            (bufferTimeInMilliseconds * this.sampleRate) / 1000 / AlphaSynthWebAudioOutputBase.BufferSize
+        this._bufferCount = calculateWebAudioBufferCount(
+            bufferTimeInMilliseconds,
+            this.sampleRate,
+            AlphaSynthWebAudioOutputBase.BufferSize,
+            2
         );
         this._circularBuffer = new CircularSampleBuffer(AlphaSynthWebAudioOutputBase.BufferSize * this._bufferCount);
         this.onReady();
@@ -30,12 +38,10 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
         this._audioNode = ctx.createScriptProcessor(4096, 0, 2);
         this._audioNode.onaudioprocess = this._generateSound.bind(this);
         this._circularBuffer.clear();
+        this._requestedBufferCount = 0;
         this._requestBuffers();
-        this.source = ctx.createBufferSource();
-        this.source.buffer = this.buffer;
-        this.source.loop = true;
-        this.source.connect(this._audioNode, 0, 0);
-        this.source.start(0);
+        this.source!.connect(this._audioNode, 0, 0);
+        this.startSource();
         this._audioNode.connect(ctx.destination, 0, 0);
     }
 
@@ -48,18 +54,25 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     }
 
     public addSamples(f: Float32Array): void {
-        this._circularBuffer.write(f, 0, f.length);
-        this._requestedBufferCount--;
+        const writtenSamples = this._circularBuffer.write(f, 0, f.length);
+        this._requestedBufferCount = Math.max(0, this._requestedBufferCount - 1);
+        const droppedFrames = Math.floor((f.length - writtenSamples) / SynthConstants.AudioChannels);
+        if (droppedFrames > 0) {
+            this.onSamplesPlayed(droppedFrames);
+        }
     }
 
     public resetSamples(): void {
         this._circularBuffer.clear();
+        this._requestedBufferCount = 0;
+        this._requestBuffers();
     }
 
     private _requestBuffers(): void {
         // if we fall under the half of buffers
         // we request one half
-        const halfBufferCount = (this._bufferCount / 2) | 0;
+        // ScriptProcessor callbacks consume 4096 stereo frames, or two alphaSynth buffers.
+        const halfBufferCount = calculateWebAudioRequestBufferCount(this._bufferCount, 2);
         const halfSamples: number = halfBufferCount * AlphaSynthWebAudioOutputBase.BufferSize;
         // Issue #631: it can happen that requestBuffers is called multiple times
         // before we already get samples via addSamples, therefore we need to
@@ -67,10 +80,10 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
         const bufferedSamples =
             this._circularBuffer.count + this._requestedBufferCount * AlphaSynthWebAudioOutputBase.BufferSize;
         if (bufferedSamples < halfSamples) {
+            this._requestedBufferCount += halfBufferCount;
             for (let i: number = 0; i < halfBufferCount; i++) {
                 this.onSampleRequest();
             }
-            this._requestedBufferCount += halfBufferCount;
         }
     }
 
@@ -84,25 +97,12 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
             buffer = new Float32Array(samples);
             this._outputBuffer = buffer;
         }
-        const samplesFromBuffer = this._circularBuffer.read(
-            buffer,
-            0,
-            Math.min(buffer.length, this._circularBuffer.count)
-        );
-        let s: number = 0;
-        const min = Math.min(left.length, samplesFromBuffer);
-        for (let i: number = 0; i < min; i++) {
-            left[i] = buffer[s++];
-            right[i] = buffer[s++];
-        }
-        if (samplesFromBuffer < left.length) {
-            for (let i = samplesFromBuffer; i < left.length; i++) {
-                left[i] = 0;
-                right[i] = 0;
-            }
-        }
+        let interleavedSamplesToRead = Math.min(buffer.length, this._circularBuffer.count);
+        interleavedSamplesToRead -= interleavedSamplesToRead % SynthConstants.AudioChannels;
+        const samplesFromBuffer = this._circularBuffer.read(buffer, 0, interleavedSamplesToRead);
+        const playedFrames = writeInterleavedStereoSamples(buffer, samplesFromBuffer, left, right);
 
-        this.onSamplesPlayed(samplesFromBuffer / SynthConstants.AudioChannels);
+        this.onSamplesPlayed(playedFrames);
         this._requestBuffers();
     }
 }

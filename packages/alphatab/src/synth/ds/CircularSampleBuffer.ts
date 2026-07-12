@@ -27,7 +27,6 @@ export class CircularSampleBuffer {
         this._readPosition = 0;
         this._writePosition = 0;
         this.count = 0;
-        this._buffer = new Float32Array(this._buffer.length);
     }
 
     /**

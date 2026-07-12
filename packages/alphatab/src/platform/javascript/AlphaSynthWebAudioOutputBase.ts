@@ -1,6 +1,11 @@
 import { AlphaTabError, AlphaTabErrorType } from '@coderline/alphatab/AlphaTabError';
 import { Environment } from '@coderline/alphatab/Environment';
-import { EventEmitter, EventEmitterOfT, type IEventEmitter, type IEventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import {
+    EventEmitter,
+    EventEmitterOfT,
+    type IEventEmitter,
+    type IEventEmitterOfT
+} from '@coderline/alphatab/EventEmitter';
 import { Logger } from '@coderline/alphatab/Logger';
 import type { ISynthOutput, ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
 
@@ -54,11 +59,19 @@ export class WebAudioHelper {
     public static async checkSinkIdSupport() {
         // https://caniuse.com/mdn-api_audiocontext_sinkid
         const context = WebAudioHelper.createAudioContext();
-        if (!('setSinkId' in context)) {
-            Logger.warning('WebAudio', 'Browser does not support changing the output device');
-            return false;
+        try {
+            if (!('setSinkId' in context)) {
+                Logger.warning('WebAudio', 'Browser does not support changing the output device');
+                return false;
+            }
+            return true;
+        } finally {
+            try {
+                await context.close();
+            } catch (e) {
+                Logger.debug('WebAudio', 'Could not close output-device capability context', e);
+            }
         }
-        return true;
     }
 
     public static async enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {
@@ -68,12 +81,17 @@ export class WebAudioHelper {
             }
 
             // Request permissions
+            let permissionStream: MediaStream | undefined;
             try {
-                await navigator.mediaDevices.getUserMedia({ audio: true });
+                permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             } catch (e) {
                 // sometimes we get an error but can still enumerate, e.g. if microphone access is denied,
                 // we can still load the output devices in some cases.
                 Logger.warning('WebAudio', 'Output device permission rejected', e);
+            } finally {
+                for (const track of permissionStream?.getTracks() ?? []) {
+                    track.stop();
+                }
             }
 
             // load devices
@@ -135,6 +153,7 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     protected source: AudioBufferSourceNode | null = null;
 
     private _resumeHandler?: () => void;
+    private _sourceStarted: boolean = false;
 
     public get sampleRate(): number {
         return this.context ? this.context.sampleRate : AlphaSynthWebAudioOutputBase.PreferredSampleRate;
@@ -192,6 +211,7 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     }
 
     private _registerResumeHandler() {
+        this._unregisterResumeHandler();
         this._resumeHandler = (() => {
             this.activate(() => {
                 this._unregisterResumeHandler();
@@ -206,6 +226,7 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
         if (resumeHandler) {
             document.body.removeEventListener('touchend', resumeHandler, false);
             document.body.removeEventListener('click', resumeHandler, false);
+            this._resumeHandler = undefined;
         }
     }
 
@@ -217,14 +238,25 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
         this.source = ctx.createBufferSource();
         this.source.buffer = this.buffer;
         this.source.loop = true;
+        this._sourceStarted = false;
+    }
+
+    protected startSource(): void {
+        if (this.source && !this._sourceStarted) {
+            this.source.start(0);
+            this._sourceStarted = true;
+        }
     }
 
     public pause(): void {
         if (this.source) {
-            this.source.stop(0);
+            if (this._sourceStarted) {
+                this.source.stop(0);
+            }
             this.source.disconnect();
         }
         this.source = null;
+        this._sourceStarted = false;
     }
 
     public destroy(): void {
@@ -240,6 +272,7 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     public readonly ready: IEventEmitter = new EventEmitter();
     public readonly samplesPlayed: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
     public readonly sampleRequest: IEventEmitter = new EventEmitter();
+    public readonly playbackFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
 
     protected onSamplesPlayed(numberOfSamples: number) {
         (this.samplesPlayed as EventEmitterOfT<number>).trigger(numberOfSamples);
@@ -251,6 +284,10 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
 
     protected onReady() {
         (this.ready as EventEmitter).trigger();
+    }
+
+    protected onPlaybackFailed(error: Error) {
+        (this.playbackFailed as EventEmitterOfT<Error>).trigger(error);
     }
 
     public enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {

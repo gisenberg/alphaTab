@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { EventEmitterOfT } from '@coderline/alphatab/EventEmitter';
 import { ScoreLoader } from '@coderline/alphatab/importer/ScoreLoader';
 import { ByteBuffer } from '@coderline/alphatab/io/ByteBuffer';
 import { AlphaSynthMidiFileHandler } from '@coderline/alphatab/midi/AlphaSynthMidiFileHandler';
@@ -21,7 +22,67 @@ import { VorbisFile } from '@coderline/alphatab/synth/vorbis/VorbisFile';
 import { TestOutput } from 'test/audio/TestOutput';
 import { TestPlatform } from 'test/TestPlatform';
 
+class BufferedTestOutput extends TestOutput {
+    private _pendingSamples: Float32Array[] = [];
+
+    public override addSamples(samples: Float32Array): void {
+        this._pendingSamples.push(samples);
+    }
+
+    public override pause(): void {
+        this._pendingSamples = [];
+    }
+
+    public override resetSamples(): void {
+        this._pendingSamples = [];
+    }
+
+    public consumeNext(): boolean {
+        const samples = this._pendingSamples.shift();
+        if (!samples) {
+            return false;
+        }
+        (this.samplesPlayed as EventEmitterOfT<number>).trigger(samples.length / SynthConstants.AudioChannels);
+        return true;
+    }
+}
+
 describe('AlphaSynthTests', () => {
+    it('resumes from the last audible frame after buffered audio is discarded on pause', async () => {
+        const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 1 4 :8 C4 * 2');
+        const midi = new MidiFile();
+        new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi)).generate();
+
+        const output = new BufferedTestOutput(false);
+        const synth = new AlphaSynth(output, 500);
+        synth.loadSoundFont(await TestPlatform.loadFile('test-data/audio/default.sf2'), false);
+        synth.loadMidiFile(midi);
+
+        let finished = false;
+        synth.finished.on(() => {
+            finished = true;
+        });
+
+        expect(synth.play()).toBe(true);
+        // Synthesize ahead without reporting any audible frames, then discard that queue.
+        for (let i = 0; i < 4; i++) {
+            output.next();
+        }
+        synth.pause();
+
+        expect(synth.timePosition).toBe(0);
+        expect(synth.play()).toBe(true);
+
+        for (let i = 0; i < 1000 && !finished; i++) {
+            output.next();
+            while (output.consumeNext()) {
+                // Drain every buffer produced by this request.
+            }
+        }
+
+        expect(finished).toBe(true);
+    });
+
     it('pcm-generation', async () => {
         const data = await TestPlatform.loadFile('test-data/audio/default.sf2');
         const tex: string =

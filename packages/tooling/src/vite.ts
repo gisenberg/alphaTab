@@ -4,7 +4,6 @@ import { cwd } from 'node:process';
 import url from 'node:url';
 import type { OutputChunk, OutputOptions, OutputPlugin } from 'rollup';
 import license from 'rollup-plugin-license';
-import { nodeExternals } from 'rollup-plugin-node-externals';
 import type { MinifyOptions } from 'terser';
 import ts from 'typescript';
 import { defineConfig, type LibraryOptions, type UserConfig } from 'vite';
@@ -14,6 +13,7 @@ import { emitDtsPlugin } from './vite.plugin.emit-dts';
 import min from './vite.plugin.min';
 import { stripProfilingPlugin } from './vite.plugin.strip-profiling';
 import { elementStyleUsingPlugin } from './vite.plugin.transform';
+import { packageDependencyExternals } from './package-externals';
 
 const terserOptions: MinifyOptions = {
     mangle: {
@@ -343,7 +343,10 @@ export function defineEsmLibConfig(setup?: (config: UserConfig) => void) {
         const lib = config.build!.lib! as LibraryOptions;
         const libEntry = lib.entry! as Record<string, string>;
 
-        config.plugins!.push(nodeExternals());
+        const packageManifest = JSON.parse(fs.readFileSync(path.resolve(projectDir, 'package.json'), 'utf8'));
+        (config.build!.rollupOptions!.external as Array<string | RegExp>).push(
+            ...packageDependencyExternals(packageManifest)
+        );
         for (const file of fs.globSync('src/**/*.ts')) {
             libEntry[path.relative('src', file.slice(0, file.length - path.extname(file).length))] = file;
         }

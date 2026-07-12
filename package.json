@@ -47,6 +47,11 @@
         "nightly-publish": "node ./scripts/nightly.mts --mode publish"
     },
     "devDependencies": {
+        "@typescript/native": "npm:typescript@^7.0.2",
         "concurrently": "^10.0.3"
+    },
+    "overrides": {
+        "brace-expansion": "5.0.7",
+        "dompurify": "3.4.12"
     }
 }

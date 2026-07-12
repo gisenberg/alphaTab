@@ -252,6 +252,10 @@ export class AlphaSynthBase implements IAlphaSynth {
             this.onSampleRequest();
         });
         this.output.samplesPlayed.on(this._onSamplesPlayed.bind(this));
+        this.output.playbackFailed?.on(error => {
+            Logger.error('AlphaSynth', 'Audio output failed during playback', error);
+            this.pause();
+        });
         this.output.open(bufferTimeInMilliseconds);
     }
 
@@ -358,6 +362,13 @@ export class AlphaSynthBase implements IAlphaSynth {
         );
         this.output.pause();
         this.synthesizer.noteOffAll(false);
+        // Web Audio outputs discard queued audio when paused. Rewind synthesis to the
+        // last frame that actually reached the speakers so resume cannot skip ahead.
+        this._notPlayedSamples = 0;
+        if (this.sequencer.isPlayingMain) {
+            this.sequencer.mainSeek(this._timePosition);
+            this.updateTimePosition(this._timePosition, true);
+        }
     }
 
     public playPause(): void {
@@ -512,11 +523,15 @@ export class AlphaSynthBase implements IAlphaSynth {
     }
 
     private _onSamplesPlayed(sampleCount: number): void {
+        if (this.state !== PlayerState.Playing) {
+            return;
+        }
         if (sampleCount === 0) {
+            this.checkForFinish();
             return;
         }
         const playedMillis: number = (sampleCount / this.synthesizer.outSampleRate) * 1000;
-        this._notPlayedSamples -= sampleCount * SynthConstants.AudioChannels;
+        this._notPlayedSamples = Math.max(0, this._notPlayedSamples - sampleCount * SynthConstants.AudioChannels);
         this.updateTimePosition(this._timePosition + playedMillis, false);
         this.checkForFinish();
     }

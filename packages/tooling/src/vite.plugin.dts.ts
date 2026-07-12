@@ -1,5 +1,4 @@
 import path from 'node:path';
-import url from 'node:url';
 import { Extractor, ExtractorConfig, type ExtractorResult } from '@microsoft/api-extractor';
 import type ts from 'typescript';
 
@@ -44,10 +43,10 @@ export default function generateDts(root: string, dtsPath: string, outputFile: s
         }
     });
 
-    const typescriptPath = path.resolve(url.fileURLToPath(import.meta.resolve('typescript')), '..', '..');
+    // API Extractor validates its parser against the TypeScript version it bundles. Loading the
+    // newer compiler API here can crash symbol analysis before Extractor can report diagnostics.
     const extractorResult: ExtractorResult = Extractor.invoke(extractorConfig, {
-        localBuild: process.env.GITHUB_ACTIONS !== 'true',
-        typescriptCompilerFolder: typescriptPath
+        localBuild: process.env.GITHUB_ACTIONS !== 'true'
     });
 
     if (extractorResult.succeeded) {

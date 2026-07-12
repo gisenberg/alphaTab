@@ -84,6 +84,11 @@ export interface ISynthOutput {
     readonly sampleRequest: IEventEmitter;
 
     /**
+     * Fired when the output cannot continue playback. Implementations may omit this event.
+     */
+    readonly playbackFailed?: IEventEmitterOfT<Error>;
+
+    /**
      * Loads and lists the available output devices. Will request permissions if needed.
      * @async
      */

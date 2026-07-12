@@ -144,7 +144,7 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
     }
 
     public get loadedMidiInfo(): PositionChangedEventArgs | undefined {
-        return this.loadedMidiInfo;
+        return this._loadedMidiInfo;
     }
 
     public get currentPosition(): PositionChangedEventArgs {
@@ -243,6 +243,10 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
         this._output.ready.on(this._onOutputReady.bind(this));
         this._output.samplesPlayed.on(this.onOutputSamplesPlayed.bind(this));
         this._output.sampleRequest.on(this.onOutputSampleRequest.bind(this));
+        this._output.playbackFailed?.on(error => {
+            Logger.error('AlphaSynth', 'Audio output failed during playback', error);
+            this.pause();
+        });
         this._output.open(settings.player.bufferTimeInMilliseconds);
         this._synth = synthWorker;
         this._synth.addEventListener('message', e => this.handleWorkerMessage(e));
