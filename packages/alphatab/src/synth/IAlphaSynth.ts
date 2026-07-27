@@ -323,7 +323,9 @@ export interface IAlphaSynth {
     readonly positionChanged: IEventEmitterOfT<PositionChangedEventArgs>;
 
     /**
-     * The event is fired when certain midi events were sent to the audio output device for playback.
+     * The event is fired when certain midi events are scheduled for the audio
+     * output. It can fire before presentation when audio is buffered; the event
+     * arguments include their exact speed-adjusted playback times.
      * @eventProperty
      */
     readonly midiEventsPlayed: IEventEmitterOfT<MidiEventsPlayedEventArgs>;

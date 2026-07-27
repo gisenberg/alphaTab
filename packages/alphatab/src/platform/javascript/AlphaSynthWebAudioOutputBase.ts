@@ -175,6 +175,16 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
         return this.context ? this.context.sampleRate : AlphaSynthWebAudioOutputBase.PreferredSampleRate;
     }
 
+    public get outputLatencyMilliseconds(): number {
+        if (!this.context) {
+            return 0;
+        }
+
+        const baseLatency = Number.isFinite(this.context.baseLatency) ? this.context.baseLatency : 0;
+        const outputLatency = Number.isFinite(this.context.outputLatency) ? this.context.outputLatency : 0;
+        return Math.max(0, (baseLatency + outputLatency) * 1000);
+    }
+
     public activate(resumedCallback?: () => void): void {
         if (!this.context) {
             this.context = WebAudioHelper.createAudioContext();

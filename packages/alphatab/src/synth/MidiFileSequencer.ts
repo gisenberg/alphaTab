@@ -65,6 +65,8 @@ export class MidiFileSequencer {
     private _mainState: MidiSequencerState;
     private _oneTimeState: MidiSequencerState | null = null;
     private _countInState: MidiSequencerState | null = null;
+    /** Absolute (speed=1) seek target requested while another state owned the synthesizer. */
+    private _pendingMainSeekTime: number | null = null;
 
     public get metronomeChannel() {
         return this._mainState.metronomeChannel;
@@ -148,8 +150,10 @@ export class MidiFileSequencer {
 
     public mainSeek(timePosition: number): void {
         // map to speed=1
-        timePosition *= this.playbackSpeed;
+        this._mainSeekAbsolute(timePosition * this.playbackSpeed);
+    }
 
+    private _mainSeekAbsolute(timePosition: number): void {
         // ensure playback range
         if (this.mainPlaybackRange) {
             if (timePosition < this._mainState.playbackRangeStartTime) {
@@ -159,27 +163,52 @@ export class MidiFileSequencer {
             }
         }
 
+        // The count-in and one-time MIDI files own the synthesizer while they play, so the main
+        // state cannot be silently processed here: its events would be dispatched into that
+        // render. Advancing only its time would be worse - the main state would resume with a
+        // stale event index and the next microbuffer would dispatch every skipped event at once,
+        // producing one simultaneous burst of note-ons. Defer the seek until the main state is
+        // current again.
+        if (!this.isPlayingMain) {
+            this._pendingMainSeekTime = timePosition;
+            return;
+        }
+        this._pendingMainSeekTime = null;
+
         if (timePosition > this._mainState.currentTime) {
             this._mainSilentProcess(timePosition - this._mainState.currentTime);
         } else if (timePosition < this._mainState.currentTime) {
             // we have to restart the midi to make sure we get the right state: instruments, volume, pan, etc
-            this._mainState.currentTime = 0;
-            this._mainState.eventIndex = 0;
-            this._mainState.syncPointIndex = 0;
-            this._mainState.tempoChangeIndex = 0;
-            this._mainState.currentTempo = this._mainState.tempoChanges[0].bpm;
-            this._mainState.syncPointTempo =
-                this._mainState.syncPoints.length > 0
-                    ? this._mainState.syncPoints[0].syncBpm
-                    : this._mainState.currentTempo;
-            if (this.isPlayingMain) {
-                const metronomeVolume: number = this._synthesizer.metronomeVolume;
-                this._synthesizer.noteOffAll(true);
-                this._synthesizer.resetSoft();
-                this._synthesizer.setupMetronomeChannel(this.metronomeChannel, metronomeVolume);
-            }
+            MidiFileSequencer._resetStateToStart(this._mainState);
+            const metronomeVolume: number = this._synthesizer.metronomeVolume;
+            this._synthesizer.noteOffAll(true);
+            this._synthesizer.resetSoft();
+            this._synthesizer.setupMetronomeChannel(this.metronomeChannel, metronomeVolume);
             this._mainSilentProcess(timePosition);
         }
+    }
+
+    /**
+     * Rewinds a state to the very beginning of its timeline. Time and event index must always be
+     * reset together: a non-zero time with a stale event index makes the next microbuffer dispatch
+     * every skipped event simultaneously.
+     */
+    private static _resetStateToStart(state: MidiSequencerState): void {
+        state.currentTime = 0;
+        state.eventIndex = 0;
+        state.syncPointIndex = 0;
+        state.tempoChangeIndex = 0;
+        state.currentTempo = state.tempoChanges.length > 0 ? state.tempoChanges[0].bpm : state.currentTempo;
+        state.syncPointTempo = state.syncPoints.length > 0 ? state.syncPoints[0].syncBpm : state.currentTempo;
+    }
+
+    private _applyPendingMainSeek(): void {
+        const pendingMainSeekTime = this._pendingMainSeekTime;
+        if (pendingMainSeekTime === null) {
+            return;
+        }
+        this._pendingMainSeekTime = null;
+        this._mainSeekAbsolute(pendingMainSeekTime);
     }
 
     private _mainSilentProcess(milliseconds: number): void {
@@ -190,11 +219,9 @@ export class MidiFileSequencer {
         const start: number = Date.now();
         const finalTime: number = this._mainState.currentTime + milliseconds;
 
-        if (this.isPlayingMain) {
-            while (this._mainState.currentTime < finalTime) {
-                if (this._fillMidiEventQueueLimited(finalTime - this._mainState.currentTime)) {
-                    this._synthesizer.synthesizeSilent(SynthConstants.MicroBufferSize);
-                }
+        while (this._mainState.currentTime < finalTime) {
+            if (this._fillMidiEventQueueLimited(finalTime - this._mainState.currentTime)) {
+                this._synthesizer.synthesizeSilent(SynthConstants.MicroBufferSize);
             }
         }
 
@@ -209,12 +236,17 @@ export class MidiFileSequencer {
         this._currentState = this._oneTimeState;
     }
 
+    public get hasPendingMainSeek(): boolean {
+        return this._pendingMainSeekTime !== null;
+    }
+
     public instrumentPrograms: Set<number> = new Set<number>();
     public percussionKeys: Set<number> = new Set<number>();
 
     public loadMidi(midiFile: MidiFile): void {
         this.instrumentPrograms.clear();
         this.percussionKeys.clear();
+        this._pendingMainSeekTime = null;
         this._mainState = this.createStateFromFile(midiFile);
         this._currentState = this._mainState;
     }
@@ -333,6 +365,10 @@ export class MidiFileSequencer {
     }
 
     public fillMidiEventQueue(): boolean {
+        if (this.isPlayingMain) {
+            // The main state must never be sequenced while a deferred seek is outstanding.
+            this._applyPendingMainSeek();
+        }
         return this._fillMidiEventQueueLimited(-1);
     }
 
@@ -642,30 +678,39 @@ export class MidiFileSequencer {
     }
 
     public stop(): void {
-        if (this.isPlayingMain && this.mainPlaybackRange) {
-            this._currentState.currentTime = this.mainPlaybackRange.startTick;
-        } else {
-            this._currentState.currentTime = 0;
-        }
+        // Stop always returns ownership to the main score. Rewinding only the active auxiliary
+        // state leaves count-in or one-time MIDI current, so the following main seek is deferred
+        // and the visible cursor remains parked at the old score position.
+        this._countInState = null;
+        this._oneTimeState = null;
+        this._currentState = this._mainState;
+        this._pendingMainSeekTime = null;
 
-        this._currentState.eventIndex = 0;
+        // Rewind to the true start of the timeline. The caller seeks to the playback range start
+        // afterwards, which replays the intervening program changes, volumes and tempo events
+        // through the silent-process path. Parking `currentTime` at the range start here (it used
+        // to be assigned the range start *tick* as if it were milliseconds) would leave the state
+        // with a stale event index of zero.
+        MidiFileSequencer._resetStateToStart(this._mainState);
     }
 
     public resetOneTimeMidi() {
         this._oneTimeState = null;
         this._currentState = this._mainState;
+        this._applyPendingMainSeek();
     }
 
     public resetCountIn() {
         this._countInState = null;
         this._currentState = this._mainState;
+        this._applyPendingMainSeek();
     }
 
     public startCountIn() {
         this.generateCountInMidi();
         this._currentState = this._countInState!;
 
-        this.stop();
+        MidiFileSequencer._resetStateToStart(this._countInState!);
         this._synthesizer.noteOffAll(true);
     }
 

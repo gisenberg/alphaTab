@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import { JsonConverter } from '@coderline/alphatab/model/JsonConverter';
+import { AlphaTabMetronomeEvent } from '@coderline/alphatab/midi/MidiEvent';
 import { Settings } from '@coderline/alphatab/Settings';
 import { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
 import {
@@ -58,6 +60,27 @@ describe('AlphaSynthWebWorkerApi', () => {
         playbackFailed.trigger(new Error('audio output failed'));
 
         expect(postMessage).toHaveBeenCalledWith({ cmd: 'alphaSynth.pause' });
+    });
+
+    it('preserves played-event playback times across the worker boundary', () => {
+        const worker = new FakeSynthWorker();
+        const api = new AlphaSynthWebWorkerApi(new TestOutput(), new Settings(), worker);
+        const received = vi.fn();
+        api.midiEventsPlayed.on(received);
+
+        worker.dispatch({
+            cmd: 'alphaSynth.midiEventsPlayed',
+            events: [JsonConverter.midiEventToJsObject(new AlphaTabMetronomeEvent(0, 960, 1, 960, 500))],
+            eventTimes: [1250],
+            currentTime: 1200,
+            isCountIn: true
+        });
+
+        expect(received).toHaveBeenCalledOnce();
+        expect(received.mock.calls[0][0].events[0].tick).toBe(960);
+        expect(received.mock.calls[0][0].eventTimes).toEqual([1250]);
+        expect(received.mock.calls[0][0].currentTime).toBe(1200);
+        expect(received.mock.calls[0][0].isCountIn).toBe(true);
     });
 
     it('correlates an atomic SoundFont bank response to its request', async () => {

@@ -86,6 +86,51 @@ describe('AlphaSynthTests', () => {
         expect(output.finalBufferReceived).toBe(true);
     });
 
+    it('reports the exact future audio time for a slow-playback metronome event', async () => {
+        const score = ScoreLoader.loadAlphaTex('\\tempo 140 . \\ts 7 8 :8 C4 * 28');
+        const midi = new MidiFile();
+        new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi)).generate();
+
+        const output = new BufferedTestOutput(false);
+        const synth = new AlphaSynth(output, 500);
+        synth.loadSoundFont(await TestPlatform.loadFile('test-data/audio/default.sf2'), false);
+        synth.loadMidiFile(midi);
+        synth.playbackSpeed = 0.4;
+        synth.metronomeVolume = 1;
+        synth.midiEventsPlayedFilter = [MidiEventType.AlphaTabMetronome];
+
+        const observed: Array<{ tick: number; eventTime: number; reportedAt: number; isCountIn: boolean }> = [];
+        synth.midiEventsPlayed.on(args => {
+            args.events.forEach((event, index) => {
+                observed.push({
+                    tick: event.tick,
+                    eventTime: args.eventTimes[index],
+                    reportedAt: args.currentTime,
+                    isCountIn: args.isCountIn
+                });
+            });
+        });
+
+        expect(synth.play()).toBe(true);
+        for (let i = 0; i < 8; i++) {
+            output.next();
+        }
+
+        for (let i = 0; i < 40 && observed.filter(event => event.tick >= 960).length === 0; i++) {
+            if (!output.consumeNext()) {
+                output.next();
+            }
+        }
+
+        const secondBeat = observed.find(event => event.tick >= 960);
+        expect(secondBeat).toBeDefined();
+        expect(secondBeat!.eventTime).toBeCloseTo((60000 / 140) / 0.4, 6);
+        expect(secondBeat!.isCountIn).toBe(false);
+        // Callback delivery is only a coarse observation. Consumers use the
+        // exact eventTime instead of treating callback delivery as the beat.
+        expect(Math.abs(secondBeat!.reportedAt - secondBeat!.eventTime)).toBeLessThan(100);
+    });
+
     it('pcm-generation', async () => {
         const data = await TestPlatform.loadFile('test-data/audio/default.sf2');
         const tex: string =

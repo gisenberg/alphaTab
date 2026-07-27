@@ -34,6 +34,13 @@ export interface ISynthOutput {
     readonly sampleRate: number;
 
     /**
+     * Gets the estimated delay, in milliseconds, between rendering a frame
+     * and that frame reaching the physical output device. Outputs which
+     * cannot measure presentation latency may omit this value.
+     */
+    readonly outputLatencyMilliseconds?: number;
+
+    /**
      * Called when the output should be opened.
      */
     open(bufferTimeInMilliseconds: number): void;

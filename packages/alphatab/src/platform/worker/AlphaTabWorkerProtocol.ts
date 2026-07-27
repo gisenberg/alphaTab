@@ -126,7 +126,13 @@ export type IAlphaSynthWorkerMessage =
     | { cmd: 'alphaSynth.midiLoaded'; args: PositionChangedEventArgs }
     | { cmd: 'alphaSynth.midiLoadFailed'; error: Error }
     | { cmd: 'alphaSynth.readyForPlayback' }
-    | { cmd: 'alphaSynth.midiEventsPlayed'; events: Map<string, unknown>[] }
+    | {
+          cmd: 'alphaSynth.midiEventsPlayed';
+          events: Map<string, unknown>[];
+          eventTimes: number[];
+          currentTime: number;
+          isCountIn: boolean;
+      }
     | { cmd: 'alphaSynth.playbackRangeChanged'; playbackRange: PlaybackRange | null }
 
     /* main -> exporter */

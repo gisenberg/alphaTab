@@ -7,7 +7,7 @@ import {
 import { ByteBuffer } from '@coderline/alphatab/io/ByteBuffer';
 import { Logger } from '@coderline/alphatab/Logger';
 import type { LogLevel } from '@coderline/alphatab/LogLevel';
-import type { MidiEvent, MidiEventType } from '@coderline/alphatab/midi/MidiEvent';
+import type { MidiEventType } from '@coderline/alphatab/midi/MidiEvent';
 import type { MidiFile } from '@coderline/alphatab/midi/MidiFile';
 import { MidiUtils } from '@coderline/alphatab/midi/MidiUtils';
 import { ModelUtils } from '@coderline/alphatab/model/ModelUtils';
@@ -686,15 +686,23 @@ export class AlphaSynthBase implements IAlphaSynth {
         if (isSeek) {
             this.playedEventsQueue.clear();
         } else {
-            const playedEvents: MidiEvent[] = [];
-            while (!this.playedEventsQueue.isEmpty && this.playedEventsQueue.peek()!.time < args.currentTime) {
+            const playedEvents: SynthEvent[] = [];
+            while (
+                !this.playedEventsQueue.isEmpty &&
+                this.playedEventsQueue.peek()!.time < args.currentTime
+            ) {
                 const synthEvent = this.playedEventsQueue.dequeue()!;
-                playedEvents.push(synthEvent.event);
+                playedEvents.push(synthEvent);
             }
             if (playedEvents.length > 0) {
                 playedEvents.reverse();
                 (this.midiEventsPlayed as EventEmitterOfT<MidiEventsPlayedEventArgs>).trigger(
-                    new MidiEventsPlayedEventArgs(playedEvents)
+                    new MidiEventsPlayedEventArgs(
+                        playedEvents.map(e => e.event),
+                        playedEvents.map(e => e.time / this.sequencer.playbackSpeed),
+                        args.currentTime,
+                        this.sequencer.isPlayingCountIn
+                    )
                 );
             }
         }

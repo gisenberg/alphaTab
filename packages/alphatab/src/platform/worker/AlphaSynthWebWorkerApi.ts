@@ -519,7 +519,12 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
                 break;
             case 'alphaSynth.midiEventsPlayed':
                 (this.midiEventsPlayed as EventEmitterOfT<MidiEventsPlayedEventArgs>).trigger(
-                    new MidiEventsPlayedEventArgs(data.events.map(JsonConverter.jsObjectToMidiEvent))
+                    new MidiEventsPlayedEventArgs(
+                        data.events.map(JsonConverter.jsObjectToMidiEvent),
+                        data.eventTimes,
+                        data.currentTime,
+                        data.isCountIn
+                    )
                 );
                 break;
             case 'alphaSynth.playerStateChanged':

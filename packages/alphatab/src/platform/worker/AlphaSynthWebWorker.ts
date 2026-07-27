@@ -310,7 +310,10 @@ export class AlphaSynthWebWorker {
     public onMidiEventsPlayed(args: MidiEventsPlayedEventArgs): void {
         this._main.postMessage({
             cmd: 'alphaSynth.midiEventsPlayed',
-            events: args.events.map(JsonConverter.midiEventToJsObject)
+            events: args.events.map(JsonConverter.midiEventToJsObject),
+            eventTimes: args.eventTimes,
+            currentTime: args.currentTime,
+            isCountIn: args.isCountIn
         });
     }
 
