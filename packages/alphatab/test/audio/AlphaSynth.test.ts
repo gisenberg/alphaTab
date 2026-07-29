@@ -16,6 +16,7 @@ import type { Score } from '@coderline/alphatab/model/Score';
 import { Settings } from '@coderline/alphatab/Settings';
 import { AlphaSynth } from '@coderline/alphatab/synth/AlphaSynth';
 import { AudioExportOptions } from '@coderline/alphatab/synth/IAudioExporter';
+import { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
 import { SynthConstants } from '@coderline/alphatab/synth/SynthConstants';
 import { TinySoundFont } from '@coderline/alphatab/synth/synthesis/TinySoundFont';
 import { VorbisFile } from '@coderline/alphatab/synth/vorbis/VorbisFile';
@@ -50,6 +51,39 @@ class BufferedTestOutput extends TestOutput {
 }
 
 describe('AlphaSynthTests', () => {
+    it('preserves the active playback range when MIDI is reloaded', async () => {
+        const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 4 4 :4 C4 D4 E4 F4 | G4 A4 B4 C5');
+        const midi = new MidiFile();
+        new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi)).generate();
+
+        const output = new TestOutput(false);
+        const synth = new AlphaSynth(output, 500);
+        synth.loadSoundFont(await TestPlatform.loadFile('test-data/audio/default.sf2'), false);
+        synth.loadMidiFile(midi);
+
+        const endTick = synth.loadedMidiInfo!.endTick;
+        const range = new PlaybackRange();
+        range.startTick = Math.floor(endTick / 4);
+        range.endTick = Math.floor((endTick * 3) / 4);
+        synth.playbackRange = range;
+        synth.isLooping = true;
+
+        synth.loadMidiFile(midi);
+
+        expect(synth.playbackRange).not.toBeNull();
+        expect(synth.playbackRange!.startTick).toBe(range.startTick);
+        expect(synth.playbackRange!.endTick).toBe(range.endTick);
+        expect(synth.tickPosition).toBeGreaterThanOrEqual(range.startTick);
+        expect(synth.tickPosition).toBeLessThanOrEqual(range.startTick + 1);
+
+        expect(synth.play()).toBe(true);
+        for (let i = 0; i < 20; i++) {
+            output.next();
+            expect(synth.tickPosition).toBeGreaterThanOrEqual(range.startTick);
+            expect(synth.tickPosition).toBeLessThanOrEqual(range.endTick);
+        }
+    });
+
     it('resumes from the last audible frame after buffered audio is discarded on pause', async () => {
         const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 1 4 :8 C4 * 2');
         const midi = new MidiFile();

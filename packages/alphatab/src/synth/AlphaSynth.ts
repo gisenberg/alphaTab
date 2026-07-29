@@ -511,7 +511,12 @@ export class AlphaSynthBase implements IAlphaSynth {
 
         try {
             Logger.debug('AlphaSynth', 'Loading midi from model');
+            const playbackRange = this.sequencer.mainPlaybackRange;
             this.sequencer.loadMidi(midi);
+            // Loading MIDI replaces the sequencer's main state. Preserve the
+            // configured range so the synth stays aligned with the public
+            // player state and cursor lookup across same-score reloads.
+            this.sequencer.mainPlaybackRange = playbackRange;
             this._isMidiLoaded = true;
             this._loadedMidiInfo = new PositionChangedEventArgs(
                 0,
@@ -525,7 +530,7 @@ export class AlphaSynthBase implements IAlphaSynth {
             (this.midiLoaded as EventEmitterOfT<PositionChangedEventArgs>).trigger(this._loadedMidiInfo);
             Logger.debug('AlphaSynth', 'Midi successfully loaded');
             this._checkReadyForPlayback();
-            this.tickPosition = 0;
+            this.tickPosition = playbackRange?.startTick ?? 0;
         } catch (e) {
             Logger.error('AlphaSynth', `Could not load midi from model ${e}`);
             (this.midiLoadFailed as EventEmitterOfT<Error>).trigger(e as Error);
