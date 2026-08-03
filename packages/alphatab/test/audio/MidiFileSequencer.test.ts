@@ -14,9 +14,14 @@ import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent'
  * decides whether note-ons are spread over time or all sound at the same instant.
  */
 class RecordingSynthesizer implements IAudioSampleSynthesizer {
+    /**
+     * The sequencer's microbuffer loops read the sample rate once per iteration, so budgeting
+     * those reads turns a non-terminating fill into a failing test instead of a hung suite.
+     */
+    private static readonly _maxMicroBufferIterations: number = 100_000;
+
     public masterVolume: number = 1;
     public metronomeVolume: number = 0;
-    public readonly outSampleRate: number = 44100;
     public readonly currentTempo: number = 120;
     public readonly timeSignatureNumerator: number = 4;
     public readonly timeSignatureDenominator: number = 4;
@@ -24,6 +29,16 @@ class RecordingSynthesizer implements IAudioSampleSynthesizer {
 
     /** Note-ons dispatched since the last {@link takeNoteOnCount} call. */
     private _noteOnCount: number = 0;
+
+    private _microBufferIterations: number = 0;
+
+    public get outSampleRate(): number {
+        this._microBufferIterations++;
+        if (this._microBufferIterations > RecordingSynthesizer._maxMicroBufferIterations) {
+            throw new Error('Sequencer microbuffer loop did not terminate');
+        }
+        return 44100;
+    }
 
     public takeNoteOnCount(): number {
         const noteOnCount = this._noteOnCount;
@@ -100,6 +115,45 @@ describe('MidiFileSequencerTests', () => {
         // The first audible microbuffer must not replay the skipped section.
         sequencer.fillMidiEventQueue();
         expect(synthesizer.takeNoteOnCount()).toBeLessThanOrEqual(1);
+    });
+
+    it('fills the queue to an end time while the count-in owns the synthesizer', () => {
+        // Regression: the microbuffer loop tested the *main* state's clock even though
+        // _fillMidiEventQueueLimited only ever advances the current state. While the count-in
+        // (or a one-time MIDI file) was current the main clock never moved, so the loop never
+        // terminated. A backing track's first time update therefore spun its caller forever and
+        // no file with embedded audio could be played at all.
+        const synthesizer = new RecordingSynthesizer();
+        const sequencer = new MidiFileSequencer(synthesizer);
+        sequencer.loadMidi(createMidi());
+
+        sequencer.startCountIn();
+        expect(sequencer.isPlayingCountIn).toBe(true);
+
+        // This is the scheduling window BackingTrackPlayer requests on every media time update.
+        sequencer.fillMidiEventQueueToEndTime(150);
+
+        expect(sequencer.currentTime).toBe(150);
+    });
+
+    it('advances the main state and applies a deferred seek when filling to an end time', () => {
+        const synthesizer = new RecordingSynthesizer();
+        const sequencer = new MidiFileSequencer(synthesizer);
+        sequencer.loadMidi(createMidi());
+
+        // A seek requested during the count-in stays deferred until the main state is current.
+        sequencer.startCountIn();
+        sequencer.mainSeek(8000);
+        sequencer.resetCountIn();
+        expect(sequencer.hasPendingMainSeek).toBe(false);
+        expect(synthesizer.takeNoteOnCount()).toBe(16);
+
+        sequencer.fillMidiEventQueueToEndTime(8150);
+
+        expect(sequencer.isPlayingMain).toBe(true);
+        expect(sequencer.currentTime).toBe(8150);
+        // Bar 5 starts exactly at the seek target, so the window plays it and nothing earlier.
+        expect(synthesizer.takeNoteOnCount()).toBe(1);
     });
 
     it('keeps time and event index consistent when stopping inside a playback range', () => {

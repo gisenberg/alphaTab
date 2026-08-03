@@ -373,8 +373,18 @@ export class MidiFileSequencer {
     }
 
     public fillMidiEventQueueToEndTime(endTime: number) {
-        while (this._mainState.currentTime < endTime) {
-            if (this._fillMidiEventQueueLimited(endTime - this._mainState.currentTime)) {
+        if (this.isPlayingMain) {
+            // The main state must never be sequenced while a deferred seek is outstanding.
+            this._applyPendingMainSeek();
+        }
+
+        // This must advance the state which is actually being sequenced, not the main state.
+        // `_fillMidiEventQueueLimited` only ever moves `_currentState`, so testing the main
+        // state's clock never terminates while a count-in or one-time MIDI file owns the
+        // synthesizer: the backing track's first time update then spins the caller's thread
+        // forever and playback can never start.
+        while (this._currentState.currentTime < endTime) {
+            if (this._fillMidiEventQueueLimited(endTime - this._currentState.currentTime)) {
                 this._synthesizer.synthesizeSilent(SynthConstants.MicroBufferSize);
             }
         }
