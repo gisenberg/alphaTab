@@ -438,7 +438,17 @@ export class Score {
         for (const mb of this.masterBars) {
             mb.finish(sharedDataBag);
         }
+
+        this.revision++;
     }
+
+    /**
+     * Counts how often {@link finish} completed. Caches which are keyed by the score object use it
+     * to detect in-place changes to the model.
+     * @json_ignore
+     * @internal
+     */
+    public revision: number = 0;
 
     /**
      * Applies the given list of {@link FlatSyncPoint} to this song.

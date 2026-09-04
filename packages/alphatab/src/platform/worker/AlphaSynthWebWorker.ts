@@ -6,6 +6,7 @@ import type {
     IAlphaTabWorkerGlobalScope
 } from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
 import { AlphaSynth, type IAlphaSynthAudioExporter } from '@coderline/alphatab/synth/AlphaSynth';
+import { computeSoundFontCacheKey } from '@coderline/alphatab/platform/javascript/SoundFontCache';
 import type { MidiEventsPlayedEventArgs } from '@coderline/alphatab/synth/MidiEventsPlayedEventArgs';
 import type { PlaybackRangeChangedEventArgs } from '@coderline/alphatab/synth/PlaybackRangeChangedEventArgs';
 import type { PlayerStateChangedEventArgs } from '@coderline/alphatab/synth/PlayerStateChangedEventArgs';
@@ -23,6 +24,8 @@ export class AlphaSynthWebWorker {
     private _exporter: Map<number, IAlphaSynthAudioExporter> = new Map<number, IAlphaSynthAudioExporter>();
     private _activeSoundFontRequest?: { requestId?: number; generation?: number; cacheKeys?: string[] };
     private _cancelledOperations: Set<number> = new Set<number>();
+    private _soundFontFetches: Map<number, AbortController> = new Map<number, AbortController>();
+    private _latestSoundFontGeneration: number = 0;
     private _soundFontCache: Map<string, ReturnType<typeof AlphaSynth.parseSoundFont>> = new Map();
     private _output!: AlphaSynthWorkerSynthOutput;
 
@@ -119,6 +122,7 @@ export class AlphaSynthWebWorker {
                 this._activeSoundFontRequest = undefined;
                 break;
             case 'alphaSynth.replaceSoundFontBank':
+                this._latestSoundFontGeneration = Math.max(this._latestSoundFontGeneration, data.generation);
                 if (this._cancelledOperations.delete(data.requestId)) {
                     this._main.postMessage({
                         cmd: 'alphaSynth.operationCancelled',
@@ -151,8 +155,13 @@ export class AlphaSynthWebWorker {
                     this._activeSoundFontRequest = undefined;
                 }
                 break;
+            case 'alphaSynth.replaceSoundFontBankFromUrls':
+                this._latestSoundFontGeneration = Math.max(this._latestSoundFontGeneration, data.generation);
+                void this._replaceSoundFontBankFromUrls(data.requestId, data.generation, data.urls);
+                break;
             case 'alphaSynth.cancelOperation':
                 this._cancelledOperations.add(data.requestId);
+                this._soundFontFetches.get(data.requestId)?.abort();
                 break;
             case 'alphaSynth.resetSoundFonts':
                 this._player.resetSoundFonts();
@@ -189,6 +198,69 @@ export class AlphaSynthWebWorker {
         if (cmd.startsWith('alphaSynth.exporter')) {
             this._handleExporterMessage(e);
         }
+    }
+
+    private async _replaceSoundFontBankFromUrls(
+        requestId: number,
+        generation: number,
+        urls: string[]
+    ): Promise<void> {
+        if (this._cancelledOperations.delete(requestId) || generation !== this._latestSoundFontGeneration) {
+            this._postOperationCancelled(requestId, generation);
+            return;
+        }
+
+        const controller = new AbortController();
+        this._soundFontFetches.set(requestId, controller);
+        try {
+            const soundFonts = await Promise.all(
+                urls.map(async url => {
+                    const response = await fetch(url, { signal: controller.signal });
+                    if (!response.ok) {
+                        throw new Error(`Loading SoundFont failed with HTTP ${response.status} for ${url}`);
+                    }
+                    const data = new Uint8Array(await response.arrayBuffer());
+                    return { cacheKey: await computeSoundFontCacheKey(data), data };
+                })
+            );
+            if (this._cancelledOperations.delete(requestId) || generation !== this._latestSoundFontGeneration) {
+                this._postOperationCancelled(requestId, generation);
+                return;
+            }
+
+            this._activeSoundFontRequest = {
+                requestId,
+                generation,
+                cacheKeys: soundFonts.map(soundFont => soundFont.cacheKey)
+            };
+            const parsed = soundFonts.map(soundFont => {
+                let cached = this._soundFontCache.get(soundFont.cacheKey);
+                if (!cached) {
+                    cached = AlphaSynth.parseSoundFont(soundFont.data);
+                    this._soundFontCache.set(soundFont.cacheKey, cached);
+                }
+                return cached;
+            });
+            this._player.loadSoundFontBank(parsed);
+        } catch (e) {
+            if (controller.signal.aborted || this._cancelledOperations.delete(requestId)) {
+                this._postOperationCancelled(requestId, generation);
+            } else {
+                this._activeSoundFontRequest = { requestId, generation };
+                this.onSoundFontLoadFailed(e);
+            }
+        } finally {
+            this._soundFontFetches.delete(requestId);
+            this._activeSoundFontRequest = undefined;
+        }
+    }
+
+    private _postOperationCancelled(requestId: number, generation: number): void {
+        this._main.postMessage({
+            cmd: 'alphaSynth.operationCancelled',
+            requestId,
+            generation
+        });
     }
     private _handleExporterMessage(ev: MessageEvent<IAlphaSynthWorkerMessage>) {
         const data = ev.data;

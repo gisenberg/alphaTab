@@ -196,10 +196,6 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
         return this._transportClock.position;
     }
 
-    public get transportGeneration(): number {
-        return this._transportClock.generation;
-    }
-
     public get tickPosition(): number {
         return this._currentPosition.currentTick;
     }
@@ -393,6 +389,50 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
             throw this._abortError();
         }
 
+        return this._startSoundFontBankOperation(generation, cacheKeys, options, requestId => ({
+            cmd: 'alphaSynth.replaceSoundFontBank',
+            requestId,
+            generation,
+            soundFonts: soundFonts.map((data, index) => ({
+                cacheKey: cacheKeys[index],
+                data: this._knownSoundFontCacheKeys.has(cacheKeys[index])
+                    ? undefined
+                    : Environment.prepareForPostMessage(data)
+            }))
+        }));
+    }
+
+    /**
+     * Fetches and parses a complete SoundFont bank inside the synth worker so
+     * large banks do not need to pass through the UI thread.
+     */
+    public loadSoundFontBankFromUrls(
+        urls: readonly string[],
+        options: SoundFontBankLoadOptions = {}
+    ): Promise<void> {
+        if (urls.length === 0) {
+            return Promise.reject(new Error('At least one SoundFont URL is required'));
+        }
+        const generation = ++this._soundFontGeneration;
+        this._rejectAllSoundFontOperations(new SoundFontBankSupersededError(), true);
+        if (options.signal?.aborted) {
+            return Promise.reject(this._abortError());
+        }
+
+        return this._startSoundFontBankOperation(generation, [], options, requestId => ({
+            cmd: 'alphaSynth.replaceSoundFontBankFromUrls',
+            requestId,
+            generation,
+            urls: [...urls]
+        }));
+    }
+
+    private _startSoundFontBankOperation(
+        generation: number,
+        cacheKeys: string[],
+        options: SoundFontBankLoadOptions,
+        createMessage: (requestId: number) => IAlphaSynthWorkerMessage
+    ): Promise<void> {
         const requestId = this._nextOperationId++;
         const timeoutMilliseconds = Math.max(1, options.timeoutMilliseconds ?? 60000);
         return new Promise<void>((resolve, reject) => {
@@ -420,17 +460,7 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
                 abortHandler
             });
             options.signal?.addEventListener('abort', abortHandler!, { once: true });
-            this._synth.postMessage({
-                cmd: 'alphaSynth.replaceSoundFontBank',
-                requestId,
-                generation,
-                soundFonts: soundFonts.map((data, index) => ({
-                    cacheKey: cacheKeys[index],
-                    data: this._knownSoundFontCacheKeys.has(cacheKeys[index])
-                        ? undefined
-                        : Environment.prepareForPostMessage(data)
-                }))
-            });
+            this._synth.postMessage(createMessage(requestId));
         });
     }
 

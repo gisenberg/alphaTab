@@ -112,6 +112,7 @@ function getWorkerType(code: string, match: RegExpExecArray): AlphaTabWorkerType
 export function importMetaUrlPlugin(options: AlphaTabVitePluginOptions): Plugin {
     let resolvedConfig: ResolvedConfig;
     let isBuild: boolean;
+    let isBundledDev: boolean;
     let preserveSymlinks: boolean;
 
     const isWorkerActive = options.webWorkers !== false;
@@ -124,6 +125,7 @@ export function importMetaUrlPlugin(options: AlphaTabVitePluginOptions): Plugin 
         configResolved(config) {
             resolvedConfig = config as ResolvedConfig;
             isBuild = config.command === 'build';
+            isBundledDev = config.command === 'serve' && config.experimental?.bundledDev === true;
             preserveSymlinks = config.resolve.preserveSymlinks;
         },
 
@@ -179,7 +181,14 @@ export function importMetaUrlPlugin(options: AlphaTabVitePluginOptions): Plugin 
                     file;
 
                 let builtUrl: string;
-                if (isBuild) {
+                if (isBundledDev) {
+                    // Bundled dev cannot serve /@fs worker URLs and its lazy
+                    // output chunks do not reliably pass through renderChunk.
+                    // copyAssetsPlugin serves the prebuilt runtimes at stable
+                    // development URLs instead.
+                    const base = resolvedConfig.base.startsWith('/') ? resolvedConfig.base : '/';
+                    builtUrl = `${base.replace(/\/$/, '')}/alphatab/${path.basename(cleanUrl(file))}`;
+                } else if (isBuild) {
                     builtUrl = await workerFileToUrl(resolvedConfig, file, workerType);
                 } else {
                     builtUrl = await fileToUrl(cleanUrl(file), resolvedConfig);

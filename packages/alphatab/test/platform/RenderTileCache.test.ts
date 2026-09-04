@@ -10,10 +10,10 @@ describe('RenderTileCache', () => {
         expect(cache.take('a')).toBe('A');
         expect(cache.set('a', 'A2', 4)).toEqual([]);
         expect(cache.set('c', 'C', 4)).toEqual(['b']);
-        expect(cache.stats).toEqual({ tileCount: 2, elementCount: 8, evictions: 1 });
+        expect(cache.stats).toEqual({ tileCount: 2, elementCount: 8 });
 
         expect(cache.configure(2, 5)).toEqual(['a']);
-        expect(cache.stats).toEqual({ tileCount: 1, elementCount: 4, evictions: 2 });
+        expect(cache.stats).toEqual({ tileCount: 1, elementCount: 4 });
     });
 
     it('does not retain a single tile larger than the element budget', () => {

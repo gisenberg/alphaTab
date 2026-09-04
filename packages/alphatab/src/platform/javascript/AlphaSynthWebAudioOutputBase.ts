@@ -47,12 +47,36 @@ export class WebAudioHelper {
         return WebAudioHelper._knownDevices.find(d => d.deviceId === sinkId);
     }
 
-    public static createAudioContext(): AudioContext {
+    /**
+     * Creates an audio context.
+     * @param minimumSampleRate When greater than zero and the platform default sample rate is
+     * below it, the context is recreated with this sample rate. Letting the platform choose first
+     * keeps native rates (e.g. 48 kHz) where they are already sufficient.
+     */
+    public static createAudioContext(minimumSampleRate: number = 0): AudioContext {
+        const contextType = WebAudioHelper._audioContextType();
+        const context = new contextType();
+        if (minimumSampleRate > 0 && context.sampleRate < minimumSampleRate) {
+            Logger.debug(
+                'WebAudio',
+                `Audio context sample rate ${context.sampleRate} is below the minimum of ${minimumSampleRate}, recreating`
+            );
+            try {
+                void context.close();
+            } catch (e) {
+                Logger.debug('WebAudio', 'Could not close low sample rate audio context', e);
+            }
+            return new contextType({ sampleRate: minimumSampleRate });
+        }
+        return context;
+    }
+
+    private static _audioContextType(): typeof AudioContext {
         if ('AudioContext' in Environment.globalThis) {
-            return new AudioContext();
+            return Environment.globalThis.AudioContext as typeof AudioContext;
         }
         if ('webkitAudioContext' in Environment.globalThis) {
-            return new webkitAudioContext();
+            return webkitAudioContext as typeof AudioContext;
         }
         throw new AlphaTabError(AlphaTabErrorType.General, 'AudioContext not found');
     }
@@ -185,9 +209,14 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
         return Math.max(0, (baseLatency + outputLatency) * 1000);
     }
 
+    /**
+     * The minimum sample rate of the audio context, see {@link PlayerSettings.minimumSampleRate}.
+     */
+    public minimumSampleRate: number = 0;
+
     public activate(resumedCallback?: () => void): void {
         if (!this.context) {
-            this.context = WebAudioHelper.createAudioContext();
+            this.context = WebAudioHelper.createAudioContext(this.minimumSampleRate);
         }
 
         if (this.context.state === 'suspended' || (this.context.state as string) === 'interrupted') {
@@ -229,7 +258,7 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
 
     public open(_bufferTimeInMilliseconds: number): void {
         this._patchIosSampleRate();
-        this.context = WebAudioHelper.createAudioContext();
+        this.context = WebAudioHelper.createAudioContext(this.minimumSampleRate);
         const ctx: any = this.context;
         if (ctx.state === 'suspended') {
             this._registerResumeHandler();
@@ -382,15 +411,17 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     }
 
     public async setOutputDevice(device: ISynthOutputDevice | null): Promise<void> {
-        if (!(await WebAudioHelper.checkSinkIdSupport())) {
+        const context = this.context;
+        if (!context || !('setSinkId' in context)) {
+            Logger.warning('WebAudio', 'Browser does not support changing the output device');
             return;
         }
 
         // https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/setSinkId
         if (!device) {
-            await (this.context as any).setSinkId('');
+            await (context as any).setSinkId('');
         } else {
-            await (this.context as any).setSinkId(device.deviceId);
+            await (context as any).setSinkId(device.deviceId);
         }
     }
 

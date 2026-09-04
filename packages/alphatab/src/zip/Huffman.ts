@@ -24,44 +24,12 @@
 /**
  * @internal
  */
-export class Huffman {}
+export class Huffman {
+    public readonly maxBits: number;
+    public readonly table: Int32Array;
 
-/**
- * @internal
- */
-export class Found extends Huffman {
-    public readonly n: number;
-
-    public constructor(n: number) {
-        super();
-        this.n = n;
-    }
-}
-
-/**
- * @internal
- */
-export class NeedBit extends Huffman {
-    public readonly left: Huffman;
-    public readonly right: Huffman;
-
-    public constructor(left: Huffman, right: Huffman) {
-        super();
-        this.left = left;
-        this.right = right;
-    }
-}
-
-/**
- * @internal
- */
-export class NeedBits extends Huffman {
-    public readonly n: number;
-    public readonly table: Huffman[];
-
-    public constructor(n: number, table: Huffman[]) {
-        super();
-        this.n = n;
+    public constructor(maxBits: number, table: Int32Array) {
+        this.maxBits = maxBits;
         this.table = table;
     }
 }

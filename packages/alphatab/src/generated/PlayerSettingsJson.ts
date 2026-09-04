@@ -27,6 +27,19 @@ export interface PlayerSettingsJson {
      */
     soundFont?: string | null;
     /**
+     * The complete ordered SoundFont bank to load for the player.
+     * @target web
+     * @since 1.9.0
+     * @defaultValue `null`
+     * @category Player - JavaScript Specific
+     * @remarks
+     * When set to a non-empty array, every URL is fetched in parallel and the
+     * parsed layers are installed atomically before playback becomes ready.
+     * Later entries override matching presets from earlier entries. This takes
+     * precedence over {@link soundFont}.
+     */
+    soundFonts?: string[];
+    /**
      * The element to apply the scrolling on.
      * @target web
      * @json_read_only
@@ -302,4 +315,16 @@ export interface PlayerSettingsJson {
      * This buffer size can be changed whenever needed.
      */
     bufferTimeInMilliseconds?: number;
+    /**
+     * The minimum sample rate of the Web Audio context used for synthesized playback.
+     * @since 1.9.0
+     * @defaultValue `0`
+     * @category Player
+     * @remarks
+     * Some systems (e.g. certain macOS Bluetooth audio configurations) default their audio context to
+     * unusually low sample rates such as 24000 Hz, which makes the SoundFont synthesis sound distorted.
+     * When this value is greater than zero and the default context sample rate is below it, the
+     * context is recreated with this sample rate. The default of `0` keeps the platform default.
+     */
+    minimumSampleRate?: number;
 }

@@ -29,6 +29,8 @@ class RecordingSynthesizer implements IAudioSampleSynthesizer {
 
     /** Note-ons dispatched since the last {@link takeNoteOnCount} call. */
     private _noteOnCount: number = 0;
+    /** Metronome events dispatched since the last {@link takeMetronomeCount} call. */
+    private _metronomeCount: number = 0;
 
     private _microBufferIterations: number = 0;
 
@@ -46,8 +48,16 @@ class RecordingSynthesizer implements IAudioSampleSynthesizer {
         return noteOnCount;
     }
 
+    public takeMetronomeCount(): number {
+        const metronomeCount = this._metronomeCount;
+        this._metronomeCount = 0;
+        return metronomeCount;
+    }
+
     public dispatchEvent(synthEvent: SynthEvent): void {
-        if (synthEvent.event?.type === MidiEventType.NoteOn) {
+        if (synthEvent.isMetronome) {
+            this._metronomeCount++;
+        } else if (synthEvent.event?.type === MidiEventType.NoteOn) {
             this._noteOnCount++;
         }
     }
@@ -175,6 +185,66 @@ describe('MidiFileSequencerTests', () => {
         // ...so audible playback starts clean.
         sequencer.fillMidiEventQueue();
         expect(synthesizer.takeNoteOnCount()).toBeLessThanOrEqual(1);
+    });
+
+    it('fills to an end time while the count-in owns the synthesizer', () => {
+        // Regression: fillMidiEventQueueToEndTime looped until the *main* state's clock reached the
+        // end time, but only the *current* state is ever advanced. With the count-in current the
+        // loop never terminated, so a backing-track player spun forever on its first media time
+        // update as soon as a count-in was enabled.
+        const synthesizer = new RecordingSynthesizer();
+        const sequencer = new MidiFileSequencer(synthesizer);
+        sequencer.loadMidi(createMidi());
+        sequencer.startCountIn();
+        expect(sequencer.isPlayingCountIn).toBe(true);
+
+        // A seek requested during the count-in stays deferred while the count-in is sequenced.
+        sequencer.mainSeek(8000);
+
+        const countInDuration = sequencer.currentEndTime;
+        expect(countInDuration).toBeGreaterThan(0);
+        expect(sequencer.fillMidiEventQueueToEndTime(countInDuration)).toBe(true);
+
+        // Four count-in clicks (4/4), no main events, and the count-in is complete.
+        expect(synthesizer.takeMetronomeCount()).toBe(4);
+        expect(synthesizer.takeNoteOnCount()).toBe(0);
+        expect(sequencer.isFinished).toBe(true);
+        expect(sequencer.hasPendingMainSeek).toBe(true);
+
+        // Handing back to the main score applies the deferred seek silently...
+        sequencer.resetCountIn();
+        expect(sequencer.isPlayingMain).toBe(true);
+        expect(sequencer.currentTime).toBe(8000);
+        expect(synthesizer.takeNoteOnCount()).toBe(16);
+
+        // ...and the main events are dispatched from there: bar 5 holds quarter notes at 8000 and 8500.
+        expect(sequencer.fillMidiEventQueueToEndTime(8600)).toBe(true);
+        expect(synthesizer.takeNoteOnCount()).toBe(2);
+        expect(sequencer.currentTime).toBe(8600);
+    });
+
+    it('fills the main state to an end time in playback time', () => {
+        const synthesizer = new RecordingSynthesizer();
+        const sequencer = new MidiFileSequencer(synthesizer);
+        sequencer.loadMidi(createMidi());
+
+        // Quarter notes at 0, 500 and 1000 are before 1200.
+        expect(sequencer.fillMidiEventQueueToEndTime(1200)).toBe(true);
+        expect(synthesizer.takeNoteOnCount()).toBe(3);
+        expect(sequencer.currentTime).toBe(1200);
+
+        // Nothing new before the same end time.
+        expect(sequencer.fillMidiEventQueueToEndTime(1200)).toBe(false);
+        expect(synthesizer.takeNoteOnCount()).toBe(0);
+
+        // The end time is in the same speed-adjusted domain as currentTime: at half speed the same
+        // three notes take 2400 ms of playback time.
+        const halfSpeed = new MidiFileSequencer(synthesizer);
+        halfSpeed.loadMidi(createMidi());
+        halfSpeed.playbackSpeed = 0.5;
+        expect(halfSpeed.fillMidiEventQueueToEndTime(2400)).toBe(true);
+        expect(synthesizer.takeNoteOnCount()).toBe(3);
+        expect(halfSpeed.currentTime).toBe(2400);
     });
 
     it('returns to the main score when stopped during count-in', () => {

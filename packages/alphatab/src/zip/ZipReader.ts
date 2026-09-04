@@ -1,4 +1,5 @@
 import { ByteBuffer } from '@coderline/alphatab/io/ByteBuffer';
+import { FormatError } from '@coderline/alphatab/FormatError';
 import { IOHelper } from '@coderline/alphatab/io/IOHelper';
 import { OverflowError, type IReadable } from '@coderline/alphatab/io/IReadable';
 import { Inflate } from '@coderline/alphatab/zip/Inflate';
@@ -66,22 +67,37 @@ export class ZipReader {
         // 4.3.8 File Data
         let data: Uint8Array;
         if (compressed) {
-            const target: ByteBuffer = ByteBuffer.empty();
             const z: Inflate = new Inflate(this._readable);
-            const buffer: Uint8Array = new Uint8Array(65536);
-            while (true) {
-                const bytes: number = z.readBytes(buffer, 0, buffer.length);
-                target.write(buffer, 0, bytes);
-                if (target.length > this._maxDecodingBufferSize) {
+            if ((flags & 8) === 0) {
+                data = new Uint8Array(uncompressedSize);
+                const bytes: number = z.readBytes(data, 0, data.length);
+                if (bytes !== data.length) {
+                    throw new FormatError(`Zip entry "${fname}" ended before its declared uncompressed size`);
+                }
+
+                const overflowProbe: Uint8Array = new Uint8Array(1);
+                if (z.readBytes(overflowProbe, 0, 1) !== 0) {
                     throw new OverflowError(
                         `Zip entry "${fname}" contains data exceeding the configured maxDecodingBufferSize`
                     );
                 }
-                if (bytes < buffer.length) {
-                    break;
+            } else {
+                const target: ByteBuffer = ByteBuffer.empty();
+                const buffer: Uint8Array = new Uint8Array(65536);
+                while (true) {
+                    const bytes: number = z.readBytes(buffer, 0, buffer.length);
+                    target.write(buffer, 0, bytes);
+                    if (target.length > this._maxDecodingBufferSize) {
+                        throw new OverflowError(
+                            `Zip entry "${fname}" contains data exceeding the configured maxDecodingBufferSize`
+                        );
+                    }
+                    if (bytes < buffer.length) {
+                        break;
+                    }
                 }
+                data = target.toArray();
             }
-            data = target.toArray();
         } else {
             data = IOHelper.readByteArray(this._readable, uncompressedSize);
         }

@@ -220,13 +220,13 @@ async function bundleWorkerEntryRolldown(
     });
     try {
         const { output } = await bundle.generate({
+            ...generateOptions,
             minify:
                 workerEnvironment.config.build.minify === 'oxc'
                     ? true
                     : workerEnvironment.config.build.minify === false
                       ? 'dce-only'
-                      : undefined,
-            ...generateOptions
+                      : undefined
         });
         const [outputChunk, ...rest] = output;
         for (const o of rest) {

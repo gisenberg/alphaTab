@@ -372,32 +372,37 @@ export class MidiFileSequencer {
         return this._fillMidiEventQueueLimited(-1);
     }
 
-    public fillMidiEventQueueToEndTime(endTime: number) {
+    /**
+     * Sequences the state which currently owns the synthesizer up to the given time and
+     * dispatches every event before it.
+     * @param endTime The speed-adjusted playback time (same domain as {@link currentTime}).
+     * @returns Whether any events were dispatched.
+     */
+    public fillMidiEventQueueToEndTime(endTime: number): boolean {
         if (this.isPlayingMain) {
             // The main state must never be sequenced while a deferred seek is outstanding.
             this._applyPendingMainSeek();
         }
 
-        // This must advance the state which is actually being sequenced, not the main state.
-        // `_fillMidiEventQueueLimited` only ever moves `_currentState`, so testing the main
-        // state's clock never terminates while a count-in or one-time MIDI file owns the
-        // synthesizer: the backing track's first time update then spins the caller's thread
-        // forever and playback can never start.
-        while (this._currentState.currentTime < endTime) {
-            if (this._fillMidiEventQueueLimited(endTime - this._currentState.currentTime)) {
+        // `_fillMidiEventQueueLimited` only advances the state which is actually current. Looping
+        // until the *main* clock reaches the target never terminates while the count-in or a
+        // one-time MIDI file owns the synthesizer, which made a backing-track player spin forever
+        // on its first media time update as soon as a count-in was enabled.
+        const state = this._currentState;
+        const absoluteEndTime = endTime * this.playbackSpeed;
+        let anyEventsDispatched: boolean = false;
+        while (state.currentTime < absoluteEndTime) {
+            if (this._fillMidiEventQueueLimited(absoluteEndTime - state.currentTime)) {
                 this._synthesizer.synthesizeSilent(SynthConstants.MicroBufferSize);
+                anyEventsDispatched = true;
             }
         }
 
-        let anyEventsDispatched: boolean = false;
-        this._currentState.currentTime = endTime;
-        while (
-            this._currentState.eventIndex < this._currentState.synthData.length &&
-            this._currentState.synthData[this._currentState.eventIndex].time < this._currentState.currentTime
-        ) {
-            const synthEvent = this._currentState.synthData[this._currentState.eventIndex];
+        state.currentTime = absoluteEndTime;
+        while (state.eventIndex < state.synthData.length && state.synthData[state.eventIndex].time < state.currentTime) {
+            const synthEvent = state.synthData[state.eventIndex];
             this._synthesizer.dispatchEvent(synthEvent);
-            this._currentState.eventIndex++;
+            state.eventIndex++;
             anyEventsDispatched = true;
         }
 

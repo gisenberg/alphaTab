@@ -98,9 +98,66 @@ async function loadVite(major: 7 | 8): Promise<ViteLike> {
     return (await import(url.href)) as unknown as ViteLike;
 }
 
+async function runBundledDevSmokeTest(vite: ViteLike) {
+    const root = path.resolve('./test-data/project');
+    await fs.promises.rm(path.join(root, 'public', 'alphatab'), { force: true, recursive: true });
+    const server = await vite.createServer({
+        root,
+        configFile: false,
+        experimental: { bundledDev: true },
+        plugins: [alphaTab()],
+        server: {
+            port: 0,
+            headers: { 'Cross-Origin-Embedder-Policy': 'credentialless' }
+        }
+    });
+
+    try {
+        await server.listen();
+        const baseUrl = server.resolvedUrls?.local[0];
+        expect(baseUrl, 'Missing bundled-dev server URL').toBeTruthy();
+
+        let entryPath: string | undefined;
+        const deadline = Date.now() + 10_000;
+        while (!entryPath && Date.now() < deadline) {
+            const html = await fetch(baseUrl!).then(response => response.text());
+            entryPath = html.match(/<script[^>]+src=["']([^"']+)["']/)?.[1];
+            if (!entryPath) {
+                await new Promise(resolve => setTimeout(resolve, 20));
+            }
+        }
+        expect(entryPath, 'Missing bundled-dev entry script').toBeTruthy();
+
+        const entry = await fetch(new URL(entryPath!, baseUrl)).then(response => response.text());
+        const workerPath = entry.match(/alphatab\/alphaTab\.worker\.mjs/)?.[0];
+        const workletPath = entry.match(/alphatab\/alphaTab\.worklet\.mjs/)?.[0];
+        expect(workerPath, 'Missing bundled-dev worker asset URL').toBeTruthy();
+        expect(workletPath, 'Missing bundled-dev worklet asset URL').toBeTruthy();
+
+        const [workerResponse, workletResponse] = await Promise.all([
+            fetch(new URL(workerPath!, baseUrl)),
+            fetch(new URL(workletPath!, baseUrl))
+        ]);
+        expect(workerResponse.ok).toBe(true);
+        expect(workerResponse.headers.get('content-type')).toContain('javascript');
+        expect(workerResponse.headers.get('cross-origin-embedder-policy')).toBe('credentialless');
+        expect(await workerResponse.text()).toContain('alphaTab.initialize');
+        expect(workletResponse.ok).toBe(true);
+        expect(workletResponse.headers.get('content-type')).toContain('javascript');
+        expect(await workletResponse.text()).toContain('registerProcessor');
+        expect(fs.existsSync(path.join(root, 'public', 'alphatab'))).toBe(false);
+    } finally {
+        await server.close();
+    }
+}
+
 // Both cases share global state (process.cwd, the dist/ folder), so they
 // must run sequentially — that is what vitest does inside a single describe.
 describe('Vite', () => {
+    it('serves prebuilt worker runtimes in Vite 8 bundled dev', { timeout: 30000 }, async () => {
+        await runBundledDevSmokeTest(await loadVite(8));
+    });
+
     it('bundle-correctly (vite 8, rolldown)', { timeout: 30000 }, async () => {
         await runBundleSmokeTest(await loadVite(8));
     });

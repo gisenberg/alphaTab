@@ -40,7 +40,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _playGeneration: number = 0;
     private _clickContext: AudioContext | null = null;
     private _scheduledClicks: Set<OscillatorNode> = new Set<OscillatorNode>();
-    public readonly transportClock: TransportClock = new TransportClock(() => performance.now());
+    private _countInTimer: number = 0;
+    /** Anchors click scheduling to the media position between coarse time updates. */
+    private readonly _transportClock: TransportClock = new TransportClock();
 
     public get backingTrackDuration(): number {
         const duration = this.audioElement.duration ?? 0;
@@ -53,7 +55,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public set playbackRate(value: number) {
         this.audioElement.playbackRate = value;
-        this.transportClock.setPlaybackRate(value);
+        this._transportClock.setPlaybackRate(value);
     }
 
     public get masterVolume(): number {
@@ -66,7 +68,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public seekTo(time: number): void {
         this.cancelScheduledMetronomeClicks();
-        this.transportClock.seek(time);
+        this._transportClock.seek(time);
         this.audioElement.currentTime = time / 1000;
     }
 
@@ -98,12 +100,13 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     private _updatePosition() {
         const timePos = this.audioElement.currentTime * 1000;
-        this.transportClock.observe(timePos);
+        this._transportClock.observe(timePos);
         (this.timeUpdate as EventEmitterOfT<number>).trigger(timePos);
     }
 
     public play(): void {
         const playGeneration = ++this._playGeneration;
+        this._clearCountInTimer();
         this._clearUpdateInterval();
         void this.audioElement.play().catch(reason => {
             if (playGeneration === this._playGeneration) {
@@ -111,10 +114,28 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
                 Logger.warning('WebAudio', `Backing track playback failed: reason=${reason}`);
             }
         });
-        this.transportClock.start(this.audioElement.currentTime * 1000);
+        this._transportClock.start(this.audioElement.currentTime * 1000);
         this._updateInterval = window.setInterval(() => {
             this._updatePosition();
         }, 50);
+    }
+
+    public playAfterCountIn(durationMilliseconds: number): void {
+        this._clearCountInTimer();
+        this._countInTimer = window.setTimeout(
+            () => {
+                this._countInTimer = 0;
+                this.play();
+            },
+            Math.max(0, durationMilliseconds)
+        );
+    }
+
+    private _clearCountInTimer(): void {
+        if (this._countInTimer !== 0) {
+            window.clearTimeout(this._countInTimer);
+            this._countInTimer = 0;
+        }
     }
     public destroy(): void {
         const audioElement = this.audioElement;
@@ -135,8 +156,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public pause(): void {
         this._playGeneration++;
+        this._clearCountInTimer();
         this.audioElement.pause();
-        this.transportClock.pause(this.audioElement.currentTime * 1000);
+        this._transportClock.pause(this.audioElement.currentTime * 1000);
         this.cancelScheduledMetronomeClicks();
         this._clearUpdateInterval();
     }
@@ -169,13 +191,20 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public scheduleMetronomeClick(backingTrackTime: number, accent: boolean, volume: number): void {
-        const context = this._ensureClickContext();
-        const delay = (backingTrackTime - this.transportClock.position) / 1000;
+        const delay = (backingTrackTime - this._transportClock.position) / 1000;
         if (delay < -0.08) {
             return;
         }
+        this._scheduleClick(Math.max(0, delay), accent, volume);
+    }
 
-        const startAt = context.currentTime + Math.max(0, delay);
+    public scheduleCountInClick(offsetMilliseconds: number, accent: boolean, volume: number): void {
+        this._scheduleClick(Math.max(0, offsetMilliseconds) / 1000, accent, volume);
+    }
+
+    private _scheduleClick(delaySeconds: number, accent: boolean, volume: number): void {
+        const context = this._ensureClickContext();
+        const startAt = context.currentTime + delaySeconds;
         const stopAt = startAt + (accent ? 0.045 : 0.032);
         const oscillator = context.createOscillator();
         const gain = context.createGain();
@@ -224,7 +253,8 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         return WebAudioHelper.enumerateOutputDevices();
     }
     public async setOutputDevice(device: ISynthOutputDevice | null): Promise<void> {
-        if (!(await WebAudioHelper.checkSinkIdSupport())) {
+        if (typeof this.audioElement.setSinkId !== 'function') {
+            Logger.warning('WebAudio', 'Browser does not support changing the output device');
             return;
         }
 

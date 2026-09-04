@@ -155,10 +155,6 @@ export class AlphaSynthBase implements IAlphaSynth {
         return this._transportClock.position;
     }
 
-    public get transportGeneration(): number {
-        return this._transportClock.generation;
-    }
-
     public get tickPosition(): number {
         return this._tickPosition;
     }
@@ -334,20 +330,45 @@ export class AlphaSynthBase implements IAlphaSynth {
         }
         this.output.activate();
 
-        this._playInternal();
+        this.playInternal();
 
         if (this._countInVolume > 0) {
-            Logger.debug('AlphaSynth', 'Starting countin');
-            this.sequencer.startCountIn();
-            this.synthesizer.setupMetronomeChannel(this.sequencer.metronomeChannel, this._countInVolume);
-            this.updateTimePosition(0, true);
+            this.startCountIn();
+        } else {
+            this.output.play();
         }
-
-        this.output.play();
         return true;
     }
 
-    private _playInternal() {
+    /**
+     * Starts the count-in and then the output. The default implementation renders the count-in
+     * through the synthesizer; transports without a sample-driven output override this.
+     * @internal
+     */
+    protected startCountIn(): void {
+        Logger.debug('AlphaSynth', 'Starting countin');
+        this.sequencer.startCountIn();
+        this.synthesizer.setupMetronomeChannel(this.sequencer.metronomeChannel, this._countInVolume);
+        this.updateTimePosition(0, true);
+        this.output.play();
+    }
+
+    /**
+     * Hands the transport back to the main score after the count-in finished.
+     * @internal
+     */
+    protected finishCountIn(): void {
+        Logger.debug('AlphaSynth', 'Finished playback (count-in)');
+        this.sequencer.resetCountIn();
+        this.timePosition = this.sequencer.currentTime;
+        this.playInternal();
+        this.output.resetSamples();
+    }
+
+    /**
+     * @internal
+     */
+    protected playInternal() {
         if (this.sequencer.isPlayingOneTimeMidi) {
             Logger.debug('AlphaSynth', 'Cancelling one time midi');
             this._stopOneTimeMidi();
@@ -592,11 +613,7 @@ export class AlphaSynthBase implements IAlphaSynth {
             if (this._notPlayedSamples <= 0) {
                 this._notPlayedSamples = 0;
                 if (this.sequencer.isPlayingCountIn) {
-                    Logger.debug('AlphaSynth', 'Finished playback (count-in)');
-                    this.sequencer.resetCountIn();
-                    this.timePosition = this.sequencer.currentTime;
-                    this._playInternal();
-                    this.output.resetSamples();
+                    this.finishCountIn();
                 } else if (this.sequencer.isPlayingOneTimeMidi) {
                     Logger.debug('AlphaSynth', 'Finished playback (one time)');
                     this.output.resetSamples();

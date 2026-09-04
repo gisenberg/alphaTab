@@ -137,9 +137,6 @@ export interface IAlphaSynth {
      */
     readonly transportTimePosition: number;
 
-    /** Increments on seek, loop, stop, or another transport discontinuity. */
-    readonly transportGeneration: number;
-
     /**
      * Gets or sets the range of the song that should be played. Set this to null
      * to play the whole song.

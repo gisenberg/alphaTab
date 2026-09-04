@@ -59,6 +59,36 @@ describe('ZipReaderWriter', () => {
         expect(IOHelper.toString(entries[3].data, 'utf-8')).toBe(text);
     });
 
+    it('reads entries whose sizes follow in a data descriptor', () => {
+        const source = ByteBuffer.withCapacity(1024);
+        const writer = new ZipWriter(source);
+        const contents = 'descriptor-backed entry '.repeat(200);
+        writer.writeEntry(new ZipEntry('Descriptor.txt', IOHelper.stringToBytes(contents)));
+        writer.end();
+
+        const original = source.toArray();
+        const compressedSize =
+            original[18] | (original[19] << 8) | (original[20] << 16) | (original[21] << 24);
+        const fileNameLength = original[26] | (original[27] << 8);
+        const extraFieldLength = original[28] | (original[29] << 8);
+        const dataEnd = 30 + fileNameLength + extraFieldLength + compressedSize;
+        const descriptor = new Uint8Array(16);
+        descriptor.set([0x50, 0x4b, 0x07, 0x08], 0);
+        descriptor.set(original.subarray(14, 26), 4);
+
+        const archive = new Uint8Array(dataEnd + descriptor.length);
+        archive.set(original.subarray(0, dataEnd));
+        archive.set(descriptor, dataEnd);
+        archive[6] |= 8;
+        archive.fill(0, 18, 26);
+
+        const entries = new ZipReader(ByteBuffer.fromBuffer(archive), 128000000).read();
+
+        expect(entries).toHaveLength(1);
+        expect(entries[0].fileName).toBe('Descriptor.txt');
+        expect(IOHelper.toString(entries[0].data, 'utf-8')).toBe(contents);
+    });
+
     describe('corrupt', () => {
         async function corruptTest(
             maxBuffer: number,

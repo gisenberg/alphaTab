@@ -135,6 +135,8 @@ describe('JsonConverterTest', () => {
         /**@target web*/
         expected.player.soundFont = 'soundfont';
         /**@target web*/
+        expected.player.soundFonts = ['base-soundfont', 'overlay-soundfont'];
+        /**@target web*/
         expected.player.scrollElement = 'scroll';
         expected.player.vibrato.noteSlightAmplitude = 10;
         expected.player.slide.simpleSlideDurationRatio = 8;

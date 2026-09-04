@@ -59,10 +59,19 @@ export class AlphaTabWebWorker {
                     });
                 });
                 this._renderer.postRenderFinished.on(() => {
-                    this._main.postMessage({
-                        cmd: 'alphaTab.postRenderFinished',
-                        boundsLookup: this._renderer.boundsLookup?.toCompact() ?? null
-                    });
+                    const boundsLookup = this._renderer.boundsLookup?.toCompact() ?? null;
+                    // The typed arrays are not needed in the worker anymore, hand their buffers over
+                    // instead of copying them.
+                    const transfer: Transferable[] = boundsLookup
+                        ? [boundsLookup.floats.buffer, boundsLookup.integers.buffer]
+                        : [];
+                    this._main.postMessage(
+                        {
+                            cmd: 'alphaTab.postRenderFinished',
+                            boundsLookup
+                        },
+                        transfer
+                    );
                 });
                 this._renderer.preRender.on(resize => {
                     this._main.postMessage({

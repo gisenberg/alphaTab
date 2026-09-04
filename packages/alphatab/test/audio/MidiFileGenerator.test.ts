@@ -2004,10 +2004,8 @@ describe('MidiFileGeneratorTest', () => {
         expect(lastArgs!.currentTick).toBe(tickImprecision);
         expect(synth.tickPosition).toBe(handler.tickShift + tickImprecision);
 
-        const transportGeneration = wrapper.transportGeneration;
         wrapper.timePosition = 250;
         expect(wrapper.transportTimePosition).toBe(250);
-        expect(wrapper.transportGeneration).toBe(transportGeneration + 1);
     });
 
     describe('effect-note-durations', () => {

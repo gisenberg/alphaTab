@@ -23,12 +23,7 @@
 import { FormatError } from '@coderline/alphatab/FormatError';
 import { IOHelper } from '@coderline/alphatab/io/IOHelper';
 import type { IReadable } from '@coderline/alphatab/io/IReadable';
-import {
-    Found as HuffmanFound,
-    type Huffman,
-    NeedBit as HuffmanNeedBit,
-    NeedBits as HuffmanNeedBits
-} from '@coderline/alphatab/zip/Huffman';
+import type { Huffman } from '@coderline/alphatab/zip/Huffman';
 import { HuffTools } from '@coderline/alphatab/zip/HuffTools';
 
 /**
@@ -56,10 +51,8 @@ class InflateWindow {
     public pos: number = 0;
 
     public slide(): void {
-        const b: Uint8Array = new Uint8Array(InflateWindow._bufferSize);
         this.pos -= InflateWindow._size;
-        b.set(this.buffer.subarray(InflateWindow._size, InflateWindow._size + this.pos), 0);
-        this.buffer = b;
+        this.buffer.copyWithin(0, InflateWindow._size, InflateWindow._size + this.pos);
     }
 
     public addBytes(b: Uint8Array, p: number, len: number): void {
@@ -172,6 +165,8 @@ export class Inflate {
                 this._state = InflateState.Block;
                 return true;
             case InflateState.Crc:
+                this._input.position -= Math.floor(this._nbits / 8);
+                this._resetBits();
                 this._state = InflateState.Done;
                 return true;
             case InflateState.Done:
@@ -393,15 +388,17 @@ export class Inflate {
     }
 
     private _applyHuffman(h: Huffman): number {
-        if (h instanceof HuffmanFound) {
-            return h.n;
+        while (this._nbits < h.maxBits) {
+            this._bits |= this._input.readByte() << this._nbits;
+            this._nbits += 8;
         }
-        if (h instanceof HuffmanNeedBit) {
-            return this._applyHuffman(this._getBit() ? h.right : h.left);
+        const entry: number = h.table[this._bits & (h.table.length - 1)];
+        if (entry < 0) {
+            throw new FormatError('Invalid data');
         }
-        if (h instanceof HuffmanNeedBits) {
-            return this._applyHuffman(h.table[this._getBits(h.n)]);
-        }
-        throw new FormatError('Invalid data');
+        const bitLength: number = entry >>> 16;
+        this._nbits -= bitLength;
+        this._bits >>= bitLength;
+        return entry & 0xffff;
     }
 }

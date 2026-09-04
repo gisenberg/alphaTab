@@ -28,6 +28,30 @@ describe('WebAudioOutput', () => {
         expect(close).toHaveBeenCalledOnce();
     });
 
+    it('sets a synth output device without creating a capability-probe context', async () => {
+        const setSinkId = vi.fn().mockResolvedValue(undefined);
+        const createAudioContext = vi.spyOn(WebAudioHelper, 'createAudioContext');
+        const output = Object.create(AlphaSynthWebAudioOutputBase.prototype) as AlphaSynthWebAudioOutputBase;
+        (output as unknown as { context: AudioContext }).context = { setSinkId } as unknown as AudioContext;
+
+        await output.setOutputDevice({ deviceId: 'speaker-1', label: 'Speaker', isDefault: false });
+
+        expect(setSinkId).toHaveBeenCalledWith('speaker-1');
+        expect(createAudioContext).not.toHaveBeenCalled();
+    });
+
+    it('sets a backing-track output device on its media element without a capability probe', async () => {
+        const setSinkId = vi.fn().mockResolvedValue(undefined);
+        const createAudioContext = vi.spyOn(WebAudioHelper, 'createAudioContext');
+        const output = new AudioElementBackingTrackSynthOutput();
+        output.audioElement = { setSinkId } as unknown as HTMLAudioElement;
+
+        await output.setOutputDevice({ deviceId: 'speaker-1', label: 'Speaker', isDefault: false });
+
+        expect(setSinkId).toHaveBeenCalledWith('speaker-1');
+        expect(createAudioContext).not.toHaveBeenCalled();
+    });
+
     it('stops the temporary microphone stream used to unlock output-device labels', async () => {
         const stop = vi.fn();
         vi.stubGlobal('navigator', {

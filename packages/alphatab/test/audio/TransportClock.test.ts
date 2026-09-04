@@ -31,14 +31,21 @@ describe('TransportClock', () => {
         now = 100;
         clock.observe(120);
         expect(clock.position).toBe(105);
-        expect(clock.generation).toBe(0);
 
         clock.observe(1000);
         expect(clock.position).toBe(1000);
-        expect(clock.generation).toBe(1);
 
         clock.seek(25);
         expect(clock.position).toBe(25);
-        expect(clock.generation).toBe(2);
+    });
+
+    it('defaults to the high resolution timer of the platform', () => {
+        // All transport clocks must share one time domain with the audio and animation timelines.
+        const source = TransportClock.defaultTimeSource();
+        const before = performance.now();
+        const sampled = source();
+        const after = performance.now();
+        expect(sampled).toBeGreaterThanOrEqual(before);
+        expect(sampled).toBeLessThanOrEqual(after);
     });
 });

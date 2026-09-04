@@ -101,6 +101,12 @@ export type IAlphaSynthWorkerMessage =
           generation: number;
           soundFonts: { cacheKey: string; data?: Uint8Array }[];
       }
+    | {
+          cmd: 'alphaSynth.replaceSoundFontBankFromUrls';
+          requestId: number;
+          generation: number;
+          urls: string[];
+      }
     | { cmd: 'alphaSynth.cancelOperation'; requestId: number }
     | { cmd: 'alphaSynth.resetSoundFonts' }
     | { cmd: 'alphaSynth.loadMidi'; midi: unknown }

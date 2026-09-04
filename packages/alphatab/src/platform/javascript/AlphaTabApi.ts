@@ -69,6 +69,27 @@ export class AlphaTabApi extends AlphaTabApiBase<SettingsJson | Settings> {
     }
 
     /**
+     * Fetches an ordered SoundFont bank and installs every layer atomically.
+     * No partial bank becomes audible if a download or parse fails.
+     */
+    public async loadSoundFontBankFromUrls(
+        urls: readonly string[],
+        options: SoundFontBankLoadOptions = {}
+    ): Promise<void> {
+        if (urls.length === 0) {
+            throw new Error('At least one SoundFont URL is required');
+        }
+        const wrapper = this.player as { instance?: unknown } | null;
+        const instance = wrapper?.instance ?? wrapper;
+        if (instance instanceof AlphaSynthWebWorkerApi) {
+            await instance.loadSoundFontBankFromUrls(urls, options);
+            return;
+        }
+        const soundFonts = await Promise.all(urls.map(url => this._fetchSoundFontFromUrl(url)));
+        await this.loadSoundFontBankAsync(soundFonts, options);
+    }
+
+    /**
      * @inheritdoc
      */
     public override tex(tex: string, tracks?: number[] | 'all'): void {
@@ -308,26 +329,41 @@ export class AlphaTabApi extends AlphaTabApiBase<SettingsJson | Settings> {
             return;
         }
 
+        void this._fetchSoundFontFromUrl(url)
+            .then(buffer => this.loadSoundFont(buffer, append))
+            .catch(() => {
+                // The request helper already reports the failure through the
+                // player's soundFontLoadFailed event.
+            });
+    }
+
+    private _fetchSoundFontFromUrl(url: string): Promise<Uint8Array> {
+        const player = this.player;
+        if (!player) {
+            return Promise.reject(new Error('The player is not initialized'));
+        }
+
         Logger.debug('AlphaSynth', `Start loading Soundfont from url ${url}`);
-        const request: XMLHttpRequest = new XMLHttpRequest();
-        request.open('GET', url, true, null, null);
-        request.responseType = 'arraybuffer';
-        request.onload = _ => {
-            const buffer: Uint8Array = new Uint8Array(request.response);
-            this.loadSoundFont(buffer, append);
-        };
-        request.onerror = e => {
-            Logger.error('AlphaSynth', `Loading failed: ${(e as any).message}`);
-            (player.soundFontLoadFailed as EventEmitterOfT<Error>).trigger(
-                new FileLoadError((e as any).message, request)
-            );
-        };
-        request.onprogress = e => {
-            Logger.debug('AlphaSynth', `Soundfont downloading: ${e.loaded}/${e.total} bytes`);
-            const args = new ProgressEventArgs(e.loaded, e.total);
-            (this.soundFontLoad as EventEmitterOfT<ProgressEventArgs>).trigger(args);
-            this.uiFacade.triggerEvent(this.container, 'soundFontLoad', args);
-        };
-        request.send();
+        return new Promise<Uint8Array>((resolve, reject) => {
+            const request: XMLHttpRequest = new XMLHttpRequest();
+            request.open('GET', url, true, null, null);
+            request.responseType = 'arraybuffer';
+            request.onload = _ => {
+                resolve(new Uint8Array(request.response));
+            };
+            request.onerror = e => {
+                Logger.error('AlphaSynth', `Loading failed: ${(e as any).message}`);
+                const error = new FileLoadError((e as any).message, request);
+                (player.soundFontLoadFailed as EventEmitterOfT<Error>).trigger(error);
+                reject(error);
+            };
+            request.onprogress = e => {
+                Logger.debug('AlphaSynth', `Soundfont downloading: ${e.loaded}/${e.total} bytes`);
+                const args = new ProgressEventArgs(e.loaded, e.total);
+                (this.soundFontLoad as EventEmitterOfT<ProgressEventArgs>).trigger(args);
+                this.uiFacade.triggerEvent(this.container, 'soundFontLoad', args);
+            };
+            request.send();
+        });
     }
 }

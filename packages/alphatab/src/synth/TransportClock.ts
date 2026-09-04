@@ -12,7 +12,6 @@ export class TransportClock {
     private _anchorTime: number = 0;
     private _playbackRate: number = 1;
     private _isRunning: boolean = false;
-    private _generation: number = 0;
 
     /** Maximum drift corrected gradually rather than treated as a discontinuity. */
     public softCorrectionLimit: number = 100;
@@ -20,29 +19,27 @@ export class TransportClock {
     /** Fraction of a small source-observation error applied on each observation. */
     public softCorrectionFactor: number = 0.25;
 
-    public constructor(now: () => number = () => Date.now()) {
-        this._now = now;
-        this._anchorTime = now();
+    /**
+     * @param now The time source in milliseconds. Defaults to `performance.now()` so all clocks
+     * share one monotonic domain with the audio and animation timelines, falling back to
+     * `Date.now()` where the high resolution timer is unavailable.
+     */
+    public constructor(now?: () => number) {
+        this._now = now ?? TransportClock.defaultTimeSource();
+        this._anchorTime = this._now();
+    }
+
+    /** The default monotonic time source of the current platform. */
+    public static defaultTimeSource(): () => number {
+        if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+            return () => performance.now();
+        }
+        return () => Date.now();
     }
 
     /** The current monotonic transport position in milliseconds. */
     public get position(): number {
         return this.positionAt(this._now());
-    }
-
-    /** Whether the transport is currently advancing. */
-    public get isRunning(): boolean {
-        return this._isRunning;
-    }
-
-    /** The current playback rate. */
-    public get playbackRate(): number {
-        return this._playbackRate;
-    }
-
-    /** Increments for every seek, loop, stop or other discontinuity. */
-    public get generation(): number {
-        return this._generation;
     }
 
     public positionAt(now: number): number {
@@ -67,7 +64,6 @@ export class TransportClock {
     public seek(position: number): void {
         this._anchorPosition = position;
         this._anchorTime = this._now();
-        this._generation++;
     }
 
     public setPlaybackRate(playbackRate: number): void {
@@ -87,9 +83,6 @@ export class TransportClock {
         if (!this._isRunning || Math.abs(drift) > this.softCorrectionLimit) {
             this._anchorPosition = position;
             this._anchorTime = observedAt;
-            if (this._isRunning && Math.abs(drift) > this.softCorrectionLimit) {
-                this._generation++;
-            }
             return;
         }
 

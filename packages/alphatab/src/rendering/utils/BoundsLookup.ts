@@ -26,41 +26,71 @@ export class BoundsLookup {
      * @target web
      */
     public toCompact(): CompactBoundsLookup {
-        const floats: number[] = [];
-        const integers: number[] = [];
+        // Count first so the typed arrays are allocated once at their final size instead of
+        // growing plain arrays and copying them afterwards.
+        let floatCount = 0;
+        let integerCount = 1;
+        for (const system of this.staffSystems) {
+            floatCount += 8;
+            integerCount += 1;
+            for (const masterBar of system.bars) {
+                floatCount += 12;
+                integerCount += 3;
+                for (const bar of masterBar.bars) {
+                    floatCount += 8;
+                    integerCount += 1;
+                    for (const beat of bar.beats) {
+                        floatCount += 9;
+                        integerCount += 6;
+                        if (beat.notes) {
+                            floatCount += beat.notes.length * 4;
+                            integerCount += beat.notes.length;
+                        }
+                    }
+                }
+            }
+        }
+
+        const floats = new Float32Array(floatCount);
+        const integers = new Int32Array(integerCount);
+        let floatIndex = 0;
+        let integerIndex = 0;
         const writeBounds = (bounds: Bounds): void => {
-            floats.push(bounds.x, bounds.y, bounds.w, bounds.h);
+            floats[floatIndex++] = bounds.x;
+            floats[floatIndex++] = bounds.y;
+            floats[floatIndex++] = bounds.w;
+            floats[floatIndex++] = bounds.h;
         };
 
-        integers.push(this.staffSystems.length);
+        integers[integerIndex++] = this.staffSystems.length;
         for (const system of this.staffSystems) {
             writeBounds(system.visualBounds);
             writeBounds(system.realBounds);
-            integers.push(system.bars.length);
+            integers[integerIndex++] = system.bars.length;
             for (const masterBar of system.bars) {
                 writeBounds(masterBar.lineAlignedBounds);
                 writeBounds(masterBar.visualBounds);
                 writeBounds(masterBar.realBounds);
-                integers.push(masterBar.index, masterBar.isFirstOfLine ? 1 : 0, masterBar.bars.length);
+                integers[integerIndex++] = masterBar.index;
+                integers[integerIndex++] = masterBar.isFirstOfLine ? 1 : 0;
+                integers[integerIndex++] = masterBar.bars.length;
                 for (const bar of masterBar.bars) {
                     writeBounds(bar.visualBounds);
                     writeBounds(bar.realBounds);
-                    integers.push(bar.beats.length);
+                    integers[integerIndex++] = bar.beats.length;
                     for (const beat of bar.beats) {
                         writeBounds(beat.visualBounds);
                         writeBounds(beat.realBounds);
-                        floats.push(beat.onNotesX);
-                        integers.push(
-                            beat.beat.voice.bar.staff.track.index,
-                            beat.beat.voice.bar.staff.index,
-                            beat.beat.voice.bar.index,
-                            beat.beat.voice.index,
-                            beat.beat.index,
-                            beat.notes?.length ?? 0
-                        );
+                        floats[floatIndex++] = beat.onNotesX;
+                        integers[integerIndex++] = beat.beat.voice.bar.staff.track.index;
+                        integers[integerIndex++] = beat.beat.voice.bar.staff.index;
+                        integers[integerIndex++] = beat.beat.voice.bar.index;
+                        integers[integerIndex++] = beat.beat.voice.index;
+                        integers[integerIndex++] = beat.beat.index;
+                        integers[integerIndex++] = beat.notes?.length ?? 0;
                         if (beat.notes) {
                             for (const note of beat.notes) {
-                                integers.push(note.note.index);
+                                integers[integerIndex++] = note.note.index;
                                 writeBounds(note.noteHeadBounds);
                             }
                         }
@@ -68,7 +98,7 @@ export class BoundsLookup {
                 }
             }
         }
-        return { version: 1, floats: new Float32Array(floats), integers: new Int32Array(integers) };
+        return { version: 1, floats, integers };
     }
 
     public toJson(): Map<string, unknown> {

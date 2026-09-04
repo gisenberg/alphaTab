@@ -106,6 +106,27 @@ describe('AlphaSynthWebWorkerApi', () => {
         await expect(operation).resolves.toBeUndefined();
     });
 
+    it('loads URL banks in the synth worker without UI-thread buffers', async () => {
+        const worker = new FakeSynthWorker();
+        const api = new AlphaSynthWebWorkerApi(new TestOutput(), new Settings(), worker);
+
+        const operation = api.loadSoundFontBankFromUrls(['/soundfont/base.sf2', '/soundfont/overlay.sf2']);
+        const request = worker.postedMessages.find(message => message.cmd === 'alphaSynth.replaceSoundFontBankFromUrls');
+        if (!request || request.cmd !== 'alphaSynth.replaceSoundFontBankFromUrls') {
+            throw new Error('missing URL SoundFont bank request');
+        }
+        expect(request.urls).toEqual(['/soundfont/base.sf2', '/soundfont/overlay.sf2']);
+
+        worker.dispatch({
+            cmd: 'alphaSynth.soundFontLoaded',
+            requestId: request.requestId,
+            generation: request.generation,
+            cacheKeys: ['base-hash', 'overlay-hash']
+        });
+
+        await expect(operation).resolves.toBeUndefined();
+    });
+
     it('supersedes an older bank request before it can become current', async () => {
         const worker = new FakeSynthWorker();
         const api = new AlphaSynthWebWorkerApi(new TestOutput(), new Settings(), worker);

@@ -41,7 +41,7 @@ import type {
     IAlphaSynthWorker
 } from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
 import { ScoreRenderer } from '@coderline/alphatab/rendering/ScoreRenderer';
-import { RenderTileCache, type RenderTileCacheStats } from '@coderline/alphatab/platform/javascript/RenderTileCache';
+import { RenderTileCache } from '@coderline/alphatab/platform/javascript/RenderTileCache';
 
 /**
  * @target web
@@ -63,6 +63,8 @@ interface ResultPlaceholder extends HTMLElement {
     resultState: ResultState;
     renderedResultId?: string;
     isIntersecting: boolean;
+    /** Number of DOM elements of the rendered tile, counted once when the result is attached. */
+    renderedElementCount: number;
 }
 
 /**
@@ -113,11 +115,6 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
 
     public get canRender(): boolean {
         return this._areAllFontsLoaded();
-    }
-
-    /** Diagnostics for the bounded detached score-tile cache. */
-    public get renderTileCacheStats(): RenderTileCacheStats {
-        return this._renderTileCache.stats;
     }
 
     private _areAllFontsLoaded(): boolean {
@@ -210,8 +207,9 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
         const nodes = Array.from(placeholder.children);
         placeholder.replaceChildren();
         placeholder.resultState = ResultState.Detached;
-        const elementCount = nodes.reduce((count, node) => count + 1 + node.querySelectorAll('*').length, 0);
-        this._markEvictedTiles(this._renderTileCache.set(placeholder.layoutResultId!, nodes, elementCount));
+        this._markEvictedTiles(
+            this._renderTileCache.set(placeholder.layoutResultId!, nodes, placeholder.renderedElementCount)
+        );
     }
 
     private _markEvictedTiles(ids: string[]): void {
@@ -705,6 +703,8 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
         }
         placeholder.resultState = ResultState.RenderDone;
         placeholder.renderedResultId = renderResult.id;
+        // Counted once here; every later detach of this tile (each scroll-out) reuses it.
+        placeholder.renderedElementCount = placeholder.querySelectorAll('*').length;
         if (this._api.settings.core.enableLazyLoading && !placeholder.isIntersecting) {
             this._detachTile(placeholder);
         }
@@ -802,14 +802,21 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
                 return null;
             }
 
-            player = new AlphaSynthWebWorkerApi(new AlphaSynthScriptProcessorOutput(), this._api.settings, worker);
+            const output = new AlphaSynthScriptProcessorOutput();
+            output.minimumSampleRate = this._api.settings.player.minimumSampleRate;
+            player = new AlphaSynthWebWorkerApi(output, this._api.settings, worker);
         }
 
         if (!player) {
             Logger.error('Player', 'Player requires webworkers and web audio api, browser unsupported', null);
         } else {
             player.ready.on(() => {
-                if (this._api.settings.player.soundFont) {
+                const soundFonts = this._api.settings.player.soundFonts;
+                if (soundFonts && soundFonts.length > 0) {
+                    void (this._api as AlphaTabApi).loadSoundFontBankFromUrls(soundFonts).catch(e => {
+                        Logger.error('AlphaSynth', 'Failed to load SoundFont bank', e);
+                    });
+                } else if (this._api.settings.player.soundFont) {
                     (this._api as AlphaTabApi).loadSoundFontFromUrl(this._api.settings.player.soundFont, false);
                 }
             });

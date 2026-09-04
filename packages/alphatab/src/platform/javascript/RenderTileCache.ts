@@ -2,7 +2,6 @@
 export interface RenderTileCacheStats {
     tileCount: number;
     elementCount: number;
-    evictions: number;
 }
 
 interface RenderTileCacheEntry<T> {
@@ -17,7 +16,6 @@ interface RenderTileCacheEntry<T> {
 export class RenderTileCache<T> {
     private readonly _entries: Map<string, RenderTileCacheEntry<T>> = new Map();
     private _elementCount: number = 0;
-    private _evictions: number = 0;
 
     public constructor(
         private _tileLimit: number,
@@ -65,8 +63,7 @@ export class RenderTileCache<T> {
     public get stats(): RenderTileCacheStats {
         return {
             tileCount: this._entries.size,
-            elementCount: this._elementCount,
-            evictions: this._evictions
+            elementCount: this._elementCount
         };
     }
 
@@ -80,7 +77,6 @@ export class RenderTileCache<T> {
             const [key, entry] = oldest.value;
             this._entries.delete(key);
             this._elementCount -= entry.elementCount;
-            this._evictions++;
             evicted.push(key);
         }
         return evicted;

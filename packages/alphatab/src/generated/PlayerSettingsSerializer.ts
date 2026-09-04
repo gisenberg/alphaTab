@@ -28,6 +28,8 @@ export class PlayerSettingsSerializer {
         /*@target web*/
         o.set("soundfont", obj.soundFont);
         /*@target web*/
+        o.set("soundfonts", obj.soundFonts);
+        /*@target web*/
         o.set("outputmode", obj.outputMode as number);
         o.set("enableplayer", obj.enablePlayer);
         o.set("playermode", obj.playerMode as number);
@@ -49,6 +51,7 @@ export class PlayerSettingsSerializer {
         o.set("slide", SlidePlaybackSettingsSerializer.toJson(obj.slide));
         o.set("playtripletfeel", obj.playTripletFeel);
         o.set("buffertimeinmilliseconds", obj.bufferTimeInMilliseconds);
+        o.set("minimumsamplerate", obj.minimumSampleRate);
         return o;
     }
     public static setProperty(obj: PlayerSettings, property: string, v: unknown): boolean {
@@ -56,6 +59,10 @@ export class PlayerSettingsSerializer {
             /*@target web*/
             case "soundfont":
                 obj.soundFont = v as string | null;
+                return true;
+            /*@target web*/
+            case "soundfonts":
+                obj.soundFonts = v as string[] | null;
                 return true;
             /*@target web*/
             case "scrollelement":
@@ -119,6 +126,9 @@ export class PlayerSettingsSerializer {
                 return true;
             case "buffertimeinmilliseconds":
                 obj.bufferTimeInMilliseconds = v! as number;
+                return true;
+            case "minimumsamplerate":
+                obj.minimumSampleRate = v! as number;
                 return true;
         }
         if (["vibrato"].indexOf(property) >= 0) {

@@ -21,7 +21,7 @@ import { FormatError } from '@coderline/alphatab/FormatError';
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-import { Found, type Huffman, NeedBit, NeedBits } from '@coderline/alphatab/zip/Huffman';
+import { Huffman } from '@coderline/alphatab/zip/Huffman';
 
 // This Inflater is based on the Zip Reader of the Haxe Standard Library (MIT)
 
@@ -30,99 +30,62 @@ import { Found, type Huffman, NeedBit, NeedBits } from '@coderline/alphatab/zip/
  */
 export class HuffTools {
     public static make(lengths: number[], pos: number, nlengths: number, maxbits: number): Huffman {
-        const counts: number[] = [];
-        const tmp: number[] = [];
         if (maxbits > 32) {
             throw new FormatError('Invalid huffman');
         }
-        for (let i: number = 0; i < maxbits; i++) {
-            counts.push(0);
-            tmp.push(0);
-        }
+        const counts: Int32Array = new Int32Array(maxbits);
+        let actualMaxBits: number = 0;
         for (let i: number = 0; i < nlengths; i++) {
-            const p: number = lengths[i + pos];
-            if (p >= maxbits) {
+            const bitLength: number = lengths[i + pos];
+            if (bitLength < 0 || bitLength >= maxbits) {
                 throw new FormatError('Invalid huffman');
             }
-            counts[p]++;
-        }
-        let code: number = 0;
-        for (let i: number = 1; i < maxbits - 1; i++) {
-            code = (code + counts[i]) << 1;
-            tmp[i] = code;
-        }
-        const bits: Map<number, number> = new Map<number, number>();
-        for (let i: number = 0; i < nlengths; i++) {
-            const l: number = lengths[i + pos];
-            if (l !== 0) {
-                const n: number = tmp[l - 1];
-                tmp[l - 1] = n + 1;
-                bits.set((n << 5) | l, i);
+            if (bitLength > 0) {
+                counts[bitLength]++;
+                actualMaxBits = Math.max(actualMaxBits, bitLength);
             }
         }
-        return HuffTools._treeCompress(
-            new NeedBit(HuffTools._treeMake(bits, maxbits, 0, 1), HuffTools._treeMake(bits, maxbits, 1, 1))
-        );
-    }
 
-    private static _treeMake(bits: Map<number, number>, maxbits: number, v: number, len: number): Huffman {
-        if (len > maxbits) {
+        if (actualMaxBits === 0) {
             throw new FormatError('Invalid huffman');
         }
-        const idx: number = (v << 5) | len;
-        if (bits.has(idx)) {
-            return new Found(bits.get(idx)!);
-        }
-        v = v << 1;
-        len += 1;
-        return new NeedBit(HuffTools._treeMake(bits, maxbits, v, len), HuffTools._treeMake(bits, maxbits, v | 1, len));
-    }
 
-    private static _treeCompress(t: Huffman): Huffman {
-        const d: number = HuffTools._treeDepth(t);
-        if (d === 0) {
-            return t;
+        const nextCode: Int32Array = new Int32Array(maxbits);
+        let code: number = 0;
+        for (let bitLength: number = 1; bitLength < maxbits; bitLength++) {
+            code = (code + counts[bitLength - 1]) << 1;
+            nextCode[bitLength] = code;
         }
-        if (d === 1) {
-            if (t instanceof NeedBit) {
-                return new NeedBit(HuffTools._treeCompress(t.left), HuffTools._treeCompress(t.right));
+
+        const table: Int32Array = new Int32Array(1 << actualMaxBits);
+        table.fill(-1);
+        for (let symbol: number = 0; symbol < nlengths; symbol++) {
+            const bitLength: number = lengths[symbol + pos];
+            if (bitLength === 0) {
+                continue;
             }
-            throw new FormatError('assert');
-        }
-        const size: number = 1 << d;
-        const table: Huffman[] = [];
-        for (let i: number = 0; i < size; i++) {
-            table.push(new Found(-1));
-        }
-        HuffTools._treeWalk(table, 0, 0, d, t);
-        return new NeedBits(d, table);
-    }
 
-    private static _treeWalk(table: Huffman[], p: number, cd: number, d: number, t: Huffman): void {
-        if (t instanceof NeedBit) {
-            if (d > 0) {
-                HuffTools._treeWalk(table, p, cd + 1, d - 1, t.left);
-                HuffTools._treeWalk(table, p | (1 << cd), cd + 1, d - 1, t.right);
-            } else {
-                table[p] = HuffTools._treeCompress(t);
+            const symbolCode: number = nextCode[bitLength]++;
+            if (symbolCode >= 1 << bitLength) {
+                throw new FormatError('Invalid huffman');
             }
-        } else {
-            table[p] = HuffTools._treeCompress(t);
+            const reversedCode: number = HuffTools._reverseBits(symbolCode, bitLength);
+            const encoded: number = (bitLength << 16) | symbol;
+            const step: number = 1 << bitLength;
+            for (let index: number = reversedCode; index < table.length; index += step) {
+                table[index] = encoded;
+            }
         }
+
+        return new Huffman(actualMaxBits, table);
     }
 
-    private static _treeDepth(t: Huffman): number {
-        if (t instanceof Found) {
-            return 0;
+    private static _reverseBits(value: number, bitLength: number): number {
+        let reversed: number = 0;
+        for (let i: number = 0; i < bitLength; i++) {
+            reversed = (reversed << 1) | (value & 1);
+            value >>= 1;
         }
-        if (t instanceof NeedBits) {
-            throw new FormatError('assert');
-        }
-        if (t instanceof NeedBit) {
-            const da: number = HuffTools._treeDepth(t.left);
-            const db: number = HuffTools._treeDepth(t.right);
-            return 1 + (da < db ? da : db);
-        }
-        return 0;
+        return reversed;
     }
 }

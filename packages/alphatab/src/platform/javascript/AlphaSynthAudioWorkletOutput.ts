@@ -49,6 +49,7 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
     public constructor(settings: Settings) {
         super();
         this._settings = settings;
+        this.minimumSampleRate = settings.player.minimumSampleRate;
         this._boundHandleMessage = e => this._handleMessage(e);
     }
 
