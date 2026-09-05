@@ -215,7 +215,8 @@ export class JsonConverter {
                     tick,
                     JsonHelper.getValue(midiEvent, 'channel') as number,
                     JsonHelper.getValue(midiEvent, 'noteKey') as number,
-                    JsonHelper.getValue(midiEvent, 'noteVelocity') as number
+                    JsonHelper.getValue(midiEvent, 'noteVelocity') as number,
+                    JsonHelper.getValue(midiEvent, 'isPalmMute') === true
                 );
             case MidiEventType.NoteOff:
                 return new NoteOffEvent(
@@ -330,6 +331,9 @@ export class JsonConverter {
                 o.set('channel', (midiEvent as NoteEvent).channel);
                 o.set('noteKey', (midiEvent as NoteEvent).noteKey);
                 o.set('noteVelocity', (midiEvent as NoteEvent).noteVelocity);
+                if (midiEvent.type === MidiEventType.NoteOn && (midiEvent as NoteOnEvent).isPalmMute) {
+                    o.set('isPalmMute', true);
+                }
                 break;
             case MidiEventType.ControlChange:
                 o.set('channel', (midiEvent as ControlChangeEvent).channel);

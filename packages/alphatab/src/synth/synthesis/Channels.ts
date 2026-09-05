@@ -23,15 +23,6 @@ export class Channels {
 
         voice.updatePitchRatio(c, tinySoundFont.outSampleRate);
 
-        if (newpan <= -0.5) {
-            voice.panFactorLeft = 1.0;
-            voice.panFactorRight = 0.0;
-        } else if (newpan >= 0.5) {
-            voice.panFactorLeft = 0.0;
-            voice.panFactorRight = 1.0;
-        } else {
-            voice.panFactorLeft = Math.sqrt(0.5 - newpan);
-            voice.panFactorRight = Math.sqrt(0.5 + newpan);
-        }
+        voice.updatePan(newpan);
     }
 }

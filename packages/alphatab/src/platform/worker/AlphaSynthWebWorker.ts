@@ -49,7 +49,8 @@ export class AlphaSynthWebWorker {
                 AlphaSynthWorkerSynthOutput.preferredSampleRate = data.sampleRate;
                 Logger.logLevel = data.logLevel;
                 this._output = new AlphaSynthWorkerSynthOutput(this._main, data.sharedSampleBuffer);
-                this._player = new AlphaSynth(this._output, data.bufferTimeInMilliseconds);
+                this._player = new AlphaSynth(this._output, data.bufferTimeInMilliseconds, data.enablePeakLimiter,
+                    data.enableExperimentalGuitarAmp, data.releaseTailSeconds);
                 this._player.positionChanged.on(e => this.onPositionChanged(e));
                 this._player.stateChanged.on(e => this.onPlayerStateChanged(e));
                 this._player.finished.on(() => this.onFinished());

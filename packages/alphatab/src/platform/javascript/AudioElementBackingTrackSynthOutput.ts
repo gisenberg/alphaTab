@@ -40,9 +40,12 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _objectUrl: string | null = null;
     private _playGeneration: number = 0;
     private _clickContext: AudioContext | null = null;
+    private _clickMasterGain: GainNode | null = null;
     private _scheduledClicks: Set<AudioBufferSourceNode> = new Set<AudioBufferSourceNode>();
     private _clickBuffers: Map<boolean, AudioBuffer> = new Map<boolean, AudioBuffer>();
     private _countInTimer: number = 0;
+    private _outputDeviceChange: Promise<void> = Promise.resolve();
+    private _destroyed: boolean = false;
     /** Anchors click scheduling to the media position between coarse time updates. */
     private readonly _transportClock: TransportClock = new TransportClock();
 
@@ -66,6 +69,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public set masterVolume(value: number) {
         this.audioElement.volume = value;
+        if (this._clickMasterGain && this._clickContext) {
+            this._clickMasterGain.gain.setValueAtTime(value, this._clickContext.currentTime);
+        }
     }
 
     public seekTo(time: number): void {
@@ -87,6 +93,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public open(_bufferTimeInMilliseconds: number): void {
+        this._destroyed = false;
         const audioElement = document.createElement('audio');
         audioElement.style.display = 'none';
         document.body.appendChild(audioElement);
@@ -140,6 +147,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         }
     }
     public destroy(): void {
+        this._destroyed = true;
         const audioElement = this.audioElement;
         if (audioElement) {
             this.pause();
@@ -151,6 +159,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         this.cancelScheduledMetronomeClicks();
         const clickContext = this._clickContext;
         this._clickContext = null;
+        this._clickMasterGain?.disconnect();
+        this._clickMasterGain = null;
+        this._clickBuffers.clear();
         if (clickContext) {
             void clickContext.close();
         }
@@ -193,7 +204,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public scheduleMetronomeClick(backingTrackTime: number, accent: boolean, volume: number): void {
-        const delay = (backingTrackTime - this._transportClock.position) / 1000;
+        // Media positions advance at playbackRate, while Web Audio schedules in
+        // wall-clock seconds. Count-in offsets already use wall time separately.
+        const delay = (backingTrackTime - this._transportClock.position) / (1000 * this.playbackRate);
         if (delay < -0.08) {
             return;
         }
@@ -207,19 +220,13 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _scheduleClick(delaySeconds: number, accent: boolean, volume: number): void {
         const context = this._ensureClickContext();
         const startAt = context.currentTime + delaySeconds;
-        let buffer = this._clickBuffers.get(accent);
-        if (!buffer) {
-            const samples = MetronomeClick.createSamples(context.sampleRate, accent);
-            buffer = context.createBuffer(1, samples.length, context.sampleRate);
-            buffer.getChannelData(0).set(samples);
-            this._clickBuffers.set(accent, buffer);
-        }
+        const buffer = this._clickBuffers.get(accent)!;
         const oscillator = context.createBufferSource();
         oscillator.buffer = buffer;
         const gain = context.createGain();
-        gain.gain.setValueAtTime(Math.max(0, volume * this.masterVolume), startAt);
+        gain.gain.setValueAtTime(Math.max(0, volume), startAt);
         oscillator.connect(gain);
-        gain.connect(context.destination);
+        gain.connect(this._clickMasterGain!);
         oscillator.addEventListener('ended', () => {
             this._scheduledClicks.delete(oscillator);
             oscillator.disconnect();
@@ -243,6 +250,17 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _ensureClickContext(): AudioContext {
         if (!this._clickContext) {
             this._clickContext = new AudioContext({ sampleRate: 44100 });
+            this._clickMasterGain = this._clickContext.createGain();
+            this._clickMasterGain.gain.setValueAtTime(this.masterVolume, this._clickContext.currentTime);
+            this._clickMasterGain.connect(this._clickContext.destination);
+            // Prepare both accents before taking a scheduling timestamp, so the
+            // first regular beat cannot be delayed by waveform generation.
+            for (const accent of [false, true]) {
+                const samples = MetronomeClick.createSamples(this._clickContext.sampleRate, accent);
+                const buffer = this._clickContext.createBuffer(1, samples.length, this._clickContext.sampleRate);
+                buffer.getChannelData(0).set(samples);
+                this._clickBuffers.set(accent, buffer);
+            }
         }
         return this._clickContext;
     }
@@ -255,26 +273,52 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     public async enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {
         return WebAudioHelper.enumerateOutputDevices();
     }
-    public async setOutputDevice(device: ISynthOutputDevice | null): Promise<void> {
+    public setOutputDevice(device: ISynthOutputDevice | null): Promise<void> {
+        const sinkId = device?.deviceId ?? '';
+        // Serialize selection so a failed earlier request cannot undo a later choice.
+        const change = this._outputDeviceChange.catch(() => {}).then(() => this._setOutputDevice(sinkId));
+        this._outputDeviceChange = change;
+        return change;
+    }
+
+    private async _setOutputDevice(sinkId: string): Promise<void> {
+        if (this._destroyed) {
+            throw new Error('Backing-track output was destroyed');
+        }
         if (typeof this.audioElement.setSinkId !== 'function') {
             Logger.warning('WebAudio', 'Browser does not support changing the output device');
             return;
         }
-
-        // https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/setSinkId
-        if (!device) {
-            await this.audioElement.setSinkId('');
-        } else {
-            await this.audioElement.setSinkId(device.deviceId);
+        // This is the real click context, not a temporary capability probe.
+        // Create it now so selecting a device before the first click cannot split routing.
+        const clickContext = this._ensureClickContext() as AudioContext & {
+            setSinkId?: (sinkId: string) => Promise<void>;
+            sinkId?: string;
+        };
+        if (!clickContext.setSinkId && sinkId !== '' && sinkId !== 'default') {
+            throw new Error('Browser cannot route backing-track metronome to the selected device');
         }
-
-        const clickContext = this._clickContext as
-            | (AudioContext & {
-                  setSinkId?: (sinkId: string) => Promise<void>;
-              })
-            | null;
-        if (clickContext?.setSinkId) {
-            await clickContext.setSinkId(device?.deviceId ?? '');
+        const previousSinkId = clickContext.sinkId ?? '';
+        if (clickContext.setSinkId) {
+            await clickContext.setSinkId(sinkId);
+        }
+        try {
+            if (this._destroyed) {
+                throw new Error('Backing-track output was destroyed');
+            }
+            await this.audioElement.setSinkId(sinkId);
+        } catch (error) {
+            if (!this._destroyed && clickContext.setSinkId) {
+                try {
+                    await clickContext.setSinkId(previousSinkId);
+                } catch (rollbackError) {
+                    throw new AggregateError(
+                        [error, rollbackError],
+                        'Output selection and click-device rollback failed'
+                    );
+                }
+            }
+            throw error;
         }
     }
 

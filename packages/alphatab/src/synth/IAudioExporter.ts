@@ -44,6 +44,24 @@ export class AudioExportOptions {
     public metronomeVolume: number = 0;
 
     /**
+     * Applies stereo-linked sample-peak protection with compensated lookahead.
+     * Does not provide oversampled true-peak protection.
+     * @default `false`
+     */
+    public enablePeakLimiter: boolean = false;
+
+    /** Experimental GM29/30 clean-source guitar amp, identical to the live worker option. @default `false` */
+    public enableExperimentalGuitarAmp: boolean = false;
+
+    /**
+     * Maximum additional seconds to drain releasing voices after the musical endpoint.
+     * A fade bounds long or stuck releases; 0 preserves exact-range export behavior.
+     * Valid range: 0-30 seconds. endTime/endTick still describe the musical range.
+     * @default `0`
+     */
+    public releaseTailSeconds: number = 0;
+
+    /**
      * The range of the song that should be exported. Set this to null
      * to play the whole song.
      */

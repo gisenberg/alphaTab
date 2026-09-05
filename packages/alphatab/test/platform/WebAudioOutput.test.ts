@@ -11,6 +11,33 @@ import { BrowserUiFacade } from '@coderline/alphatab/platform/javascript/Browser
 const originalWorkletFactory = BrowserUiFacade.createAlphaSynthAudioWorklet;
 
 describe('WebAudioOutput', () => {
+    it.each([0.5, 0.75, 1, 1.5, 2])('schedules backing clicks in wall time at playback rate %s', rate => {
+        const output = new AudioElementBackingTrackSynthOutput();
+        output.audioElement = { currentTime: 1, playbackRate: 1, volume: 1 } as HTMLAudioElement;
+        output.seekTo(1000);
+        output.playbackRate = rate;
+        const schedule = vi
+            .spyOn(
+                output as unknown as {
+                    _scheduleClick(delay: number, accent: boolean, volume: number): void;
+                },
+                '_scheduleClick'
+            )
+            .mockImplementation(() => {});
+
+        // A beat 500 ms ahead on the recording is 1 s away when practicing at half speed.
+        output.scheduleMetronomeClick(1500, true, 0.4);
+        expect(schedule).toHaveBeenLastCalledWith(0.5 / rate, true, 0.4);
+        // Count-in offsets already use wall time and must not be scaled a second time.
+        output.scheduleCountInClick(500, false, 0.4);
+        expect(schedule).toHaveBeenLastCalledWith(0.5, false, 0.4);
+        schedule.mockClear();
+        output.scheduleMetronomeClick(1000 - 100 * rate, false, 0.4);
+        expect(schedule).not.toHaveBeenCalled();
+        output.scheduleMetronomeClick(1000 - 40 * rate, false, 0.4);
+        expect(schedule).toHaveBeenCalledWith(0, false, 0.4);
+    });
+
     afterEach(() => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
@@ -45,10 +72,16 @@ describe('WebAudioOutput', () => {
         const createAudioContext = vi.spyOn(WebAudioHelper, 'createAudioContext');
         const output = new AudioElementBackingTrackSynthOutput();
         output.audioElement = { setSinkId } as unknown as HTMLAudioElement;
+        const clickSetSinkId = vi.fn().mockResolvedValue(undefined);
+        vi.spyOn(output as unknown as { _ensureClickContext(): AudioContext }, '_ensureClickContext').mockReturnValue({
+            setSinkId: clickSetSinkId,
+            sinkId: ''
+        } as unknown as AudioContext);
 
         await output.setOutputDevice({ deviceId: 'speaker-1', label: 'Speaker', isDefault: false });
 
         expect(setSinkId).toHaveBeenCalledWith('speaker-1');
+        expect(clickSetSinkId).toHaveBeenCalledWith('speaker-1');
         expect(createAudioContext).not.toHaveBeenCalled();
     });
 

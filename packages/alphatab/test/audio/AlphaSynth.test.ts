@@ -289,7 +289,8 @@ describe('AlphaSynthTests', () => {
         score: Score,
         fileName: string,
         prepareOptions: (options: AudioExportOptions) => void,
-        verify?: (samples: Float32Array) => void
+        verify?: (samples: Float32Array) => void,
+        chunkMilliseconds: number = 300
     ) {
         // add a fake sync point to get time range (if there are not already sync points)
         const syncPoints = score.exportFlatSyncPoints();
@@ -333,7 +334,7 @@ describe('AlphaSynthTests', () => {
 
         let totalSamples = 0;
         while (true) {
-            const chunk = exporter.render(300);
+            const chunk = exporter.render(chunkMilliseconds);
             if (chunk === undefined) {
                 break;
             }
@@ -357,6 +358,14 @@ describe('AlphaSynthTests', () => {
         if (verify) {
             verify(generated);
             return;
+        }
+        // Deliberately opt in to one reference after validating a synthesis change.
+        // Keep ordinary runs sample-exact rather than weakening the comparison.
+        if (process.env.ALPHATAB_UPDATE_AUDIO_REFERENCE === fileName) {
+            await TestPlatform.saveFile(
+                `test-data/audio/${fileName}.pcm`,
+                new Uint8Array(generated.buffer, generated.byteOffset, generated.byteLength)
+            );
         }
         try {
             const reference = new DataView((await TestPlatform.loadFile(`test-data/audio/${fileName}.pcm`)).buffer);
@@ -426,10 +435,24 @@ describe('AlphaSynthTests', () => {
     it('export-sync-points', async () => {
         const data = await TestPlatform.loadFile('test-data/audio/syncpoints-testfile.gp');
         const score = ScoreLoader.loadScoreFromBytes(data, new Settings());
-
-        await testAudioExport(score, 'export-sync-points', options => {
+        let reference: Float32Array = new Float32Array(0);
+        const configure = (options: AudioExportOptions) => {
             options.useSyncPoints = true;
-        });
+        };
+        // Regression: advancing by the requested 300 ms instead of the actual
+        // rounded microbuffers made the old PCM golden encode sync-point drift.
+        // Different requests must now produce the exact same synchronized audio.
+        await testAudioExport(score, 'export-sync-points', configure, samples => {
+            reference = samples;
+        }, 300);
+        await testAudioExport(score, 'export-sync-points', configure, samples => {
+            expect(samples.length).toBe(reference.length);
+            for (let i = 0; i < samples.length; i++) {
+                if (samples[i] !== reference[i]) {
+                    expect(samples[i], `Chunk-dependent sample at ${i}`).toBe(reference[i]);
+                }
+            }
+        }, 7);
     });
 
     it('midi-bank', () => {

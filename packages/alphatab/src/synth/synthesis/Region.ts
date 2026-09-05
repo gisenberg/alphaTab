@@ -82,6 +82,8 @@ export class Region {
 
     public loopMode: LoopMode = LoopMode.None;
     public samples: Float32Array = Region._noSamples;
+    /** Right-hand region supplying a stereo left half's synchronized pitch generators. */
+    public pitchRegion: Region | undefined;
     public sampleRate: number = 0;
     public loKey: number = 0;
     public hiKey: number = 0;
@@ -97,6 +99,7 @@ export class Region {
     public pitchKeyCenter: number = 0;
     public pitchKeyTrack: number = 0;
     public attenuation: number = 0;
+    public velocityAttenuation: number = 960;
     public pan: number = 0;
     public ampEnv: Envelope = new Envelope();
     public modEnv: Envelope = new Envelope();
@@ -117,6 +120,7 @@ export class Region {
         if (other) {
             this.loopMode = other.loopMode;
             this.samples = other.samples;
+            this.pitchRegion = other.pitchRegion;
             this.sampleRate = other.sampleRate;
             this.loKey = other.loKey;
             this.hiKey = other.hiKey;
@@ -132,6 +136,7 @@ export class Region {
             this.pitchKeyCenter = other.pitchKeyCenter;
             this.pitchKeyTrack = other.pitchKeyTrack;
             this.attenuation = other.attenuation;
+            this.velocityAttenuation = other.velocityAttenuation;
             this.pan = other.pan;
             this.ampEnv = new Envelope(other.ampEnv);
             this.modEnv = new Envelope(other.modEnv);
@@ -153,6 +158,7 @@ export class Region {
     public clear(forRelative: boolean): void {
         this.loopMode = LoopMode.None;
         this.samples = Region._noSamples;
+        this.pitchRegion = undefined;
         this.sampleRate = 0;
         this.loKey = 0;
         this.hiKey = 0;
@@ -168,6 +174,7 @@ export class Region {
         this.pitchKeyCenter = 0;
         this.pitchKeyTrack = 0;
         this.attenuation = 0;
+        this.velocityAttenuation = 960;
         this.pan = 0;
         this.ampEnv.clear();
         this.modEnv.clear();
@@ -333,16 +340,16 @@ export class Region {
                 this.loopStart += TypeConversions.int16ToUint32(amount.shortAmount) * 32768;
                 break;
             case GenOperators.InitialAttenuation:
-                this.attenuation += amount.shortAmount * 0.1;
+                this.attenuation = amount.shortAmount * 0.1;
                 break;
             case GenOperators.EndloopAddrsCoarseOffset:
                 this.loopEnd += TypeConversions.int16ToUint32(amount.shortAmount) * 32768;
                 break;
             case GenOperators.CoarseTune:
-                this.transpose += amount.shortAmount;
+                this.transpose = amount.shortAmount;
                 break;
             case GenOperators.FineTune:
-                this.tune += amount.shortAmount;
+                this.tune = amount.shortAmount;
                 break;
             case GenOperators.SampleModes:
                 this.loopMode =

@@ -313,8 +313,12 @@ export abstract class NoteEvent extends MidiEvent {
  * @public
  */
 export class NoteOnEvent extends NoteEvent {
-    public constructor(track: number, tick: number, channel: number, noteKey: number, noteVelocity: number) {
+    /** Per-note synthesis hint; standard MIDI export retains the note's timed gate. */
+    public isPalmMute: boolean;
+
+    public constructor(track: number, tick: number, channel: number, noteKey: number, noteVelocity: number, isPalmMute: boolean = false) {
         super(track, tick, MidiEventType.NoteOn, channel, noteKey, noteVelocity);
+        this.isPalmMute = isPalmMute;
     }
 
     public override writeTo(s: IWriteable): void {

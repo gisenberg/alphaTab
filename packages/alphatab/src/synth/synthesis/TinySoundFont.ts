@@ -26,14 +26,20 @@ import {
     type HydraShdr
 } from '@coderline/alphatab/synth/soundfont/Hydra';
 import { Channel } from '@coderline/alphatab/synth/synthesis/Channel';
+import { compileLinearVelocityModulation, compileVelocityAttenuation, defaultVelocityAttenuation, resolveModulatorLayers, velocityAttenuationDb, type SoundFontModulator } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
 import { MetronomeClick } from '@coderline/alphatab/synth/MetronomeClick';
 import { Channels } from '@coderline/alphatab/synth/synthesis/Channels';
 import { LoopMode } from '@coderline/alphatab/synth/synthesis/LoopMode';
 import { OutputMode } from '@coderline/alphatab/synth/synthesis/OutputMode';
 import { Preset } from '@coderline/alphatab/synth/synthesis/Preset';
 import { Region } from '@coderline/alphatab/synth/synthesis/Region';
+import { linkStereoSampleRegions, type StereoSampleRegion } from '@coderline/alphatab/synth/synthesis/StereoSampleRegions';
 import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
 import { Voice } from '@coderline/alphatab/synth/synthesis/Voice';
+import { TrackAudioBus } from '@coderline/alphatab/synth/synthesis/TrackAudioBus';
+import { GuitarAmpProcessor } from '@coderline/alphatab/synth/synthesis/GuitarAmpProcessor';
+import { findGuitarAmpChannels } from '@coderline/alphatab/synth/synthesis/GuitarAmpRouting';
+import type { MidiFile } from '@coderline/alphatab/midi/MidiFile';
 import { VoiceEnvelopeSegment } from '@coderline/alphatab/synth/synthesis/VoiceEnvelope';
 import { SynthHelper } from '@coderline/alphatab/synth/SynthHelper';
 import { TypeConversions } from '@coderline/alphatab/io/TypeConversions';
@@ -56,6 +62,56 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
     private _mutedChannels: Map<number, boolean> = new Map<number, boolean>();
     private _soloChannels: Map<number, boolean> = new Map<number, boolean>();
     private _isAnySolo: boolean = false;
+    private _trackAudioBuses: readonly TrackAudioBus[] = [];
+    private _channelAudioBuses: Map<number, TrackAudioBus> = new Map();
+
+    public prepareMidi(midi: MidiFile): void {
+        if (!this._enableExperimentalGuitarAmp) { return; }
+        // MIDI replacement is a stopped transport boundary, not a live effect switch.
+        for (const voice of this._voices) { voice.kill(); }
+        this.setTrackAudioBuses([]);
+        const buses: TrackAudioBus[] = [];
+        for (const channels of findGuitarAmpChannels(midi)) {
+            const volume = this.channelGetMixVolume(channels[0]);
+            if (channels.some(channel => this.channelGetMixVolume(channel) !== volume)) {
+                Logger.warning('AlphaSynth', 'Skipping experimental guitar processing for unequal channel faders');
+                continue;
+            }
+            buses.push(new TrackAudioBus(channels, new GuitarAmpProcessor(this.outSampleRate, 1, 0.2, 0.1),
+                new Map([[29, 27], [30, 27]])));
+        }
+        this.setTrackAudioBuses(buses);
+    }
+
+    /** Configure worker-owned processors before playback. Channels of a track share its mix fader. */
+    public setTrackAudioBuses(buses: readonly TrackAudioBus[]): void {
+        if (this._voices.some(voice => voice.playingPreset !== -1)) {
+            throw new Error('Stop active voices before changing track processing');
+        }
+        if (buses.length && this.outputMode !== OutputMode.StereoInterleaved) {
+            throw new Error('Track processing requires interleaved stereo output');
+        }
+        const mapping = new Map<number, TrackAudioBus>();
+        const processors = new Set();
+        for (const bus of buses) {
+            if (processors.has(bus.processor)) { throw new Error('Each track must own its processor state'); }
+            processors.add(bus.processor);
+            const mixVolume = this.channelGetMixVolume(bus.channels[0]);
+            for (const channel of bus.channels) {
+                if (mapping.has(channel) || channel === this._metronomeChannel) {
+                    throw new Error('Track buses must not overlap or include the metronome channel');
+                }
+                if (this.channelGetMixVolume(channel) !== mixVolume) {
+                    throw new Error('Channels sharing a track processor must share a mix fader');
+                }
+                mapping.set(channel, bus);
+            }
+        }
+        for (const bus of this._trackAudioBuses) { bus.reset(); }
+        for (const bus of buses) { bus.reset(); }
+        this._trackAudioBuses = [...buses];
+        this._channelAudioBuses = mapping;
+    }
 
     // these are the transposition pitches applied generally on the song (via Settings or general transposition)
     private _transpositionPitches: Map<number, number> = new Map<number, number>();
@@ -72,8 +128,15 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
     private _accentClick: Float32Array = new Float32Array(0);
     private _regularClick: Float32Array = new Float32Array(0);
 
-    public constructor(sampleRate: number) {
+    public constructor(sampleRate: number, private readonly _enableExperimentalGuitarAmp: boolean = false) {
         this.outSampleRate = sampleRate;
+        this._prepareMetronomeSamples();
+    }
+
+    private _prepareMetronomeSamples(): void {
+        this._clickSampleRate = this.outSampleRate;
+        this._accentClick = MetronomeClick.createSamples(this.outSampleRate, true);
+        this._regularClick = MetronomeClick.createSamples(this.outSampleRate, false);
     }
 
     public synthesize(buffer: Float32Array, bufferPos: number, sampleCount: number): SynthEvent[] {
@@ -91,6 +154,15 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
     }
 
     public channelSetMixVolume(channel: number, volume: number): void {
+        const bus = this._channelAudioBuses.get(channel);
+        if (bus) {
+            for (const member of bus.channels) { this._setChannelMixVolume(member, volume); }
+        } else {
+            this._setChannelMixVolume(channel, volume);
+        }
+    }
+
+    private _setChannelMixVolume(channel: number, volume: number): void {
         const c: Channel = this._channelInit(channel);
         for (const v of this._voices) {
             if (v.playingChannel === channel && v.playingPreset !== -1) {
@@ -197,9 +269,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             const m: SynthEvent = this._midiEventQueue.dequeue()!;
             if (m.isMetronome && this.metronomeVolume > 0) {
                 if (this._clickSampleRate !== this.outSampleRate) {
-                    this._clickSampleRate = this.outSampleRate;
-                    this._accentClick = MetronomeClick.createSamples(this.outSampleRate, true);
-                    this._regularClick = MetronomeClick.createSamples(this.outSampleRate, false);
+                    this._prepareMetronomeSamples();
                 }
                 this._clickSamples = (m.event as AlphaTabMetronomeEvent).metronomeNumerator === 0
                     ? this._accentClick : this._regularClick;
@@ -210,10 +280,14 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             processedEvents.push(m);
         }
 
-        // voice processing loop
+        if (buffer && this._trackAudioBuses.length) {
+            this._renderTrackAudioBuses(buffer, bufferPos, sampleCount);
+        }
+        // voice processing loop (unprocessed channels keep the original fast path)
         for (const voice of this._voices) {
             if (voice.playingPreset !== -1) {
                 const channel: number = voice.playingChannel;
+                if (buffer && voice.audioBus) { continue; }
                 // channel is muted if it is either explicitley muted, or another channel is set to solo but not this one.
                 // exception. metronome is implicitly added in solo
                 const isChannelMuted: boolean =
@@ -230,6 +304,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
 
         if (!buffer) {
             this._clickSamples = null;
+            for (const bus of this._trackAudioBuses) { bus.reset(); }
         } else if (this._clickSamples) {
             const gain = this.metronomeVolume * this.masterVolume;
             for (let i = 0; i < sampleCount && this._clickPosition < this._clickSamples.length; i++) {
@@ -252,6 +327,37 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
         return processedEvents;
     }
 
+    private _renderTrackAudioBuses(buffer: Float32Array, offset: number, frames: number): void {
+        if (this.outputMode !== OutputMode.StereoInterleaved) {
+            throw new Error('Track processing requires interleaved stereo output');
+        }
+        for (let start = 0; start < frames; start += SynthConstants.MicroBufferSize) {
+            const count = Math.min(SynthConstants.MicroBufferSize, frames - start);
+            for (const bus of this._trackAudioBuses) { bus.buffer.fill(0); }
+            for (const voice of this._voices) {
+                if (voice.playingPreset === -1) { continue; }
+                const channel = voice.playingChannel;
+                const bus = voice.audioBus;
+                if (!bus) { continue; }
+                const muted = this._mutedChannels.has(channel) || (this._isAnySolo && !this._soloChannels.has(channel));
+                voice.render(this, bus.buffer, 0, count, muted, true);
+            }
+            for (const bus of this._trackAudioBuses) {
+                bus.processor.process(bus.buffer, count);
+                // Process tails even without active voices, but mute/solo gates the complete output.
+                let audible = false;
+                for (const channel of bus.channels) {
+                    if (!this._mutedChannels.has(channel) && (!this._isAnySolo || this._soloChannels.has(channel))) {
+                        audible = true;
+                        break;
+                    }
+                }
+                const gain = audible ? this.masterVolume * this.channelGetMixVolume(bus.channels[0]) : 0;
+                for (let i = 0; i < count * 2; i++) { buffer[offset + start * 2 + i] += bus.buffer[i] * gain; }
+            }
+        }
+    }
+
     public processMidiMessage(e: MidiEvent): void {
         //Logger.debug('Midi', `Processing Midi message ${MidiEventType[e.type]}/${e.tick}`);
         const command: MidiEventType = e.type;
@@ -263,7 +369,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                 break;
             case MidiEventType.NoteOn:
                 const noteOn = e as NoteOnEvent;
-                this.channelNoteOn(noteOn.channel, noteOn.noteKey, noteOn.noteVelocity / 127.0);
+                this.channelNoteOn(noteOn.channel, noteOn.noteKey, noteOn.noteVelocity / 127.0, noteOn.isPalmMute);
                 break;
             case MidiEventType.NoteOff:
                 const noteOff = e as NoteOffEvent;
@@ -338,6 +444,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      */
     public resetSoft(): void {
         this._clickSamples = null;
+        for (const bus of this._trackAudioBuses) { bus.reset(); }
         for (const v of this._voices) {
             if (
                 v.playingPreset !== -1 &&
@@ -395,6 +502,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      */
     public reset(): void {
         this._clickSamples = null;
+        for (const bus of this._trackAudioBuses) { bus.reset(); }
         for (const v of this._voices) {
             if (
                 v.playingPreset !== -1 &&
@@ -413,6 +521,9 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param globalGainDb volume gain in decibels (>0 means higher, <0 means lower)
      */
     public setOutput(outputMode: OutputMode, sampleRate: number, globalGainDb: number): void {
+        if (this._trackAudioBuses.length && outputMode !== OutputMode.StereoInterleaved) {
+            throw new Error('Track processing requires interleaved stereo output');
+        }
         this.outputMode = outputMode;
         this.outSampleRate = sampleRate >= 1 ? sampleRate : 44100.0;
         this.globalGainDb = globalGainDb;
@@ -424,7 +535,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param key note value between 0 and 127 (60 being middle C)
      * @param vel velocity as a float between 0.0 (equal to note off) and 1.0 (full)
      */
-    public noteOn(presetIndex: number, key: number, vel: number): void {
+    public noteOn(presetIndex: number, key: number, vel: number, isPalmMute: boolean = false): void {
         if (!this.presets) {
             return;
         }
@@ -440,9 +551,28 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
         }
 
         // Play all matching regions.
+        const preset = this.presets[presetIndex];
+        let sourcePreset = preset;
+        let audioBus = this._channelAudioBuses.get(this._channels?.activeChannel ?? 0);
+        if (audioBus?.programSources) {
+            const sourceProgram = preset.bank === 0 ? audioBus.programSources.get(preset.presetNumber) : undefined;
+            const sourceIndex = sourceProgram === undefined ? -1 : this._getPresetIndex(0, sourceProgram);
+            const source = this.presets[sourceIndex];
+            // An unavailable source must retain the original sound, never silence the note.
+            if (source?.regions?.some(region => region.samples && region.samples.length > 0 &&
+                key >= region.loKey && key <= region.hiKey && midiVelocity >= region.loVel && midiVelocity <= region.hiVel)) {
+                sourcePreset = source;
+            } else {
+                audioBus = undefined;
+            }
+        }
+        const palmMute = isPalmMute && preset.bank < 128 && preset.presetNumber >= 24 && preset.presetNumber <= 39;
         const voicePlayIndex: number = this._voicePlayIndex++;
-        for (const region of this.presets[presetIndex].regions!) {
+        for (const region of sourcePreset.regions!) {
             if (
+                // Unused/unsupported SoundFont regions have no decoded PCM.
+                // Starting them feeds undefined samples into the voice and poisons the mix with NaN.
+                region.samples.length === 0 ||
                 key < region.loKey ||
                 key > region.hiKey ||
                 midiVelocity < region.loVel ||
@@ -453,7 +583,10 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             let voice: Voice | null = null;
             if (region.group !== 0) {
                 for (const v of this._voices) {
-                    if (v.playingPreset === presetIndex && v.region!.group === region.group) {
+                    // Choke earlier notes, not stereo/layered regions of this hit
+                    // or a separate MIDI channel using the same drum preset.
+                    if (v.playingPreset === presetIndex && v.region!.group === region.group &&
+                        v.playIndex !== voicePlayIndex && v.playingChannel === (this._channels?.activeChannel ?? 0)) {
                         v.endQuick(this.outSampleRate);
                     } else if (v.playingPreset === -1 && !voice) {
                         voice = v;
@@ -478,17 +611,18 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
 
             voice.region = region;
             voice.playingPreset = presetIndex;
+            voice.audioBus = audioBus;
             voice.playingKey = key;
             voice.playIndex = voicePlayIndex;
-            voice.noteGainDb = this.globalGainDb - region.attenuation - SynthHelper.gainToDecibels(1.0 / vel);
+            voice.noteGainDb = this.globalGainDb - Math.max(0, Math.min(144,
+                region.attenuation + velocityAttenuationDb(region.velocityAttenuation, midiVelocity)));
 
             if (this._channels) {
                 this._channels.setupVoice(this, voice);
             } else {
                 voice.calcPitchRatio(0, this.outSampleRate);
                 // The SFZ spec is silent about the pan curve, but a 3dB pan law seems common. This sqrt() curve matches what Dimension LE does; Alchemy Free seems closer to sin(adjustedPan * pi/2).
-                voice.panFactorLeft = Math.sqrt(0.5 - region.pan);
-                voice.panFactorRight = Math.sqrt(0.5 + region.pan);
+                voice.updatePan(region.pan);
             }
 
             // Offset/end.
@@ -500,22 +634,30 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             voice.loopEnd = doLoop ? region.loopEnd : 0;
 
             // Setup envelopes.
-            voice.ampEnv.setup(region.ampEnv, key, midiVelocity, true, this.outSampleRate);
+            voice.ampEnv.setup(region.ampEnv, key, midiVelocity, true, this.outSampleRate, palmMute);
             voice.modEnv.setup(region.modEnv, key, midiVelocity, false, this.outSampleRate);
+            if (region.pitchRegion) {
+                voice.pitchModEnv.setup(region.pitchRegion.modEnv, key, midiVelocity, false, this.outSampleRate);
+                voice.pitchModLfo.setup(region.pitchRegion.delayModLFO, region.pitchRegion.freqModLFO, this.outSampleRate);
+            }
 
             // Setup lowpass filter.
-            const filterQDB: number = region.initialFilterQ / 10.0;
-            voice.lowPass.qInv = 1.0 / Math.pow(10.0, filterQDB / 20.0);
+            voice.lowPass.setResonance(region.initialFilterQ);
             voice.lowPass.z1 = 0;
             voice.lowPass.z2 = 0;
-            voice.lowPass.active = region.initialFilterFc <= 13500;
-            if (voice.lowPass.active) {
-                voice.lowPass.setup(SynthHelper.cents2Hertz(region.initialFilterFc) / this.outSampleRate);
+            voice.initialFilterFc = region.initialFilterFc;
+            if (palmMute) {
+                // Damping belongs to this voice, never its shared SoundFont region
+                // or MIDI channel. Open notes in the same chord retain their tone.
+                const cutoffHz = Math.min(4000, Math.max(1800, 440 * Math.pow(2, (key - 69) / 12) * 18));
+                voice.initialFilterFc = Math.min(voice.initialFilterFc, 1200 * Math.log2(cutoffHz / 8.176));
             }
+            voice.lowPass.setCutoff(voice.initialFilterFc, this.outSampleRate);
 
             // Setup LFO filters.
             voice.modLfo.setup(region.delayModLFO, region.freqModLFO, this.outSampleRate);
-            voice.vibLfo.setup(region.delayVibLFO, region.freqVibLFO, this.outSampleRate);
+            const pitchRegion = region.pitchRegion ?? region;
+            voice.vibLfo.setup(pitchRegion.delayVibLFO, pitchRegion.freqVibLFO, this.outSampleRate);
         }
     }
 
@@ -694,7 +836,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param key note value between 0 and 127 (60 being middle C)
      * @param vel velocity as a float between 0.0 (equal to note off) and 1.0 (full)
      */
-    public channelNoteOn(channel: number, key: number, vel: number): void {
+    public channelNoteOn(channel: number, key: number, vel: number, isPalmMute: boolean = false): void {
         if (!this._channels || channel > this._channels.channelList.length) {
             return;
         }
@@ -708,7 +850,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
         }
 
         this._channels.activeChannel = channel;
-        this.noteOn(this._channels.channelList[channel].presetIndex, key, vel);
+        this.noteOn(this._channels.channelList[channel].presetIndex, key, vel, isPalmMute);
     }
 
     /**
@@ -878,19 +1020,14 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param pan stereo panning value from 0.0 (left) to 1.0 (right) (default 0.5 center)
      */
     public channelSetPan(channel: number, pan: number): void {
+        if (!Number.isFinite(pan)) {
+            throw new RangeError('Pan must be finite');
+        }
+        pan = Math.max(0, Math.min(1, pan));
         for (const v of this._voices) {
             if (v.playingChannel === channel && v.playingPreset !== -1) {
                 const newPan: number = v.region!.pan + pan - 0.5;
-                if (newPan <= -0.5) {
-                    v.panFactorLeft = 1;
-                    v.panFactorRight = 0;
-                } else if (newPan >= 0.5) {
-                    v.panFactorLeft = 0;
-                    v.panFactorRight = 1;
-                } else {
-                    v.panFactorLeft = Math.sqrt(0.5 - newPan);
-                    v.panFactorRight = Math.sqrt(0.5 + newPan);
-                }
+                v.updatePan(newPan);
             }
         }
         this._channelInit(channel).panOffset = pan - 0.5;
@@ -1031,11 +1168,11 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                 return;
             case ControllerType.PanCoarse:
                 c.midiPan = TypeConversions.int32ToUint16((c.midiPan & 0x7f) | (controlValue << 7));
-                this.channelSetPan(channel, c.midiPan / 16383.0);
+                this.channelSetPan(channel, c.midiPan / 16384.0);
                 return;
             case ControllerType.PanFine:
                 c.midiPan = TypeConversions.int32ToUint16((c.midiPan & 0x3f80) | controlValue);
-                this.channelSetPan(channel, c.midiPan / 16383.0);
+                this.channelSetPan(channel, c.midiPan / 16384.0);
                 return;
             case ControllerType.DataEntryCoarse:
                 c.midiData = TypeConversions.int32ToUint16((c.midiData & 0x7f) | (controlValue << 7));
@@ -1124,7 +1261,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      */
     public channelGetPan(channel: number): number {
         return this._channels && channel < this._channels.channelList.length
-            ? this._channels.channelList[channel].panOffset - 0.5
+            ? this._channels.channelList[channel].panOffset + 0.5
             : 0.5;
     }
 
@@ -1182,12 +1319,18 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
         percussionKeys: Set<number>,
         append: boolean
     ): void {
+        if (this._enableExperimentalGuitarAmp && this._trackAudioBuses.length) {
+            // Do not mutate the sequencer's actual instrument inventory.
+            instrumentPrograms = new Set(instrumentPrograms);
+            instrumentPrograms.add(27);
+        }
         const newPresets: Preset[] = [];
         for (let phdrIndex: number = 0; phdrIndex < hydra.phdrs.length - 1; phdrIndex++) {
             const phdr: HydraPhdr = hydra.phdrs[phdrIndex];
             let regionIndex: number = 0;
 
             const preset: Preset = new Preset();
+            const stereoRegions: StereoSampleRegion[] = [];
             newPresets.push(preset);
             preset.name = phdr.presetName;
             preset.bank = phdr.bank;
@@ -1277,6 +1420,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
 
             let globalRegion: Region = new Region();
             globalRegion.clear(true);
+            let presetGlobalModulators: readonly SoundFontModulator[] = [];
 
             // Zones.
             for (
@@ -1285,6 +1429,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                 pbagIndex++
             ) {
                 const pbag: HydraPbag = hydra.pbags[pbagIndex];
+                const presetLocalModulators = hydra.pmods.slice(pbag.modNdx, hydra.pbags[pbagIndex + 1].modNdx);
 
                 const presetRegion: Region = new Region(globalRegion);
                 let hadGenInstrument: boolean = false;
@@ -1302,6 +1447,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
 
                         let instRegion: Region = new Region();
                         instRegion.clear(false);
+                        let instrumentGlobalModulators: readonly SoundFontModulator[] = [];
 
                         // Generators
                         const inst: HydraInst = hydra.insts[whichInst];
@@ -1311,6 +1457,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                             ibagIndex++
                         ) {
                             const ibag: HydraIbag = hydra.ibags[ibagIndex];
+                            const instrumentLocalModulators = hydra.imods.slice(ibag.instModNdx, hydra.ibags[ibagIndex + 1].instModNdx);
                             const zoneRegion: Region = new Region(instRegion);
                             let hadSampleId: boolean = false;
 
@@ -1322,6 +1469,12 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                 const igen: HydraIgen = hydra.igens[igenIndex];
 
                                 if (igen.genOper === HydraPgen.GenSampleId) {
+                                    const modulatorLayers = resolveModulatorLayers(
+                                        [defaultVelocityAttenuation], instrumentGlobalModulators,
+                                        instrumentLocalModulators, presetGlobalModulators, presetLocalModulators);
+                                    zoneRegion.velocityAttenuation = compileVelocityAttenuation(modulatorLayers);
+                                    zoneRegion.ampEnv.velocityToDecay = compileLinearVelocityModulation(modulatorLayers, 36);
+                                    zoneRegion.ampEnv.velocityToRelease = compileLinearVelocityModulation(modulatorLayers, 38);
                                     // preset region key and vel ranges are a filter for the zone regions
                                     if (
                                         zoneRegion.hiKey < presetRegion.loKey ||
@@ -1369,12 +1522,16 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                     zoneRegion.ampEnv.decay += presetRegion.ampEnv.decay;
                                     zoneRegion.ampEnv.sustain += presetRegion.ampEnv.sustain;
                                     zoneRegion.ampEnv.release += presetRegion.ampEnv.release;
+                                    zoneRegion.ampEnv.keynumToHold += presetRegion.ampEnv.keynumToHold;
+                                    zoneRegion.ampEnv.keynumToDecay += presetRegion.ampEnv.keynumToDecay;
                                     zoneRegion.modEnv.delay += presetRegion.modEnv.delay;
                                     zoneRegion.modEnv.attack += presetRegion.modEnv.attack;
                                     zoneRegion.modEnv.hold += presetRegion.modEnv.hold;
                                     zoneRegion.modEnv.decay += presetRegion.modEnv.decay;
                                     zoneRegion.modEnv.sustain += presetRegion.modEnv.sustain;
                                     zoneRegion.modEnv.release += presetRegion.modEnv.release;
+                                    zoneRegion.modEnv.keynumToHold += presetRegion.modEnv.keynumToHold;
+                                    zoneRegion.modEnv.keynumToDecay += presetRegion.modEnv.keynumToDecay;
                                     zoneRegion.initialFilterQ += presetRegion.initialFilterQ;
                                     zoneRegion.initialFilterFc += presetRegion.initialFilterFc;
                                     zoneRegion.modEnvToPitch += presetRegion.modEnvToPitch;
@@ -1409,11 +1566,10 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                         zoneRegion.pan = 0.5;
                                     }
 
-                                    if (zoneRegion.initialFilterQ < 1500 || zoneRegion.initialFilterQ > 13500) {
-                                        zoneRegion.initialFilterQ = 0;
-                                    }
+                                    zoneRegion.initialFilterQ = Math.max(0, Math.min(960, zoneRegion.initialFilterQ));
 
                                     const shdr: HydraShdr = hydra.sHdrs[igen.genAmount.wordAmount];
+                                    const sampleType = shdr.sampleType & ~0x10;
                                     zoneRegion.offset += shdr.start;
                                     zoneRegion.end += shdr.end;
                                     zoneRegion.loopStart += shdr.startLoop;
@@ -1446,13 +1602,13 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                             `Skipping load of unused sample ${shdr.sampleName} for preset ${phdr.presetName} (bank ${preset.bank} program ${preset.presetNumber})`
                                         );
                                         zoneRegion.samples = new Float32Array(0);
-                                    } else if ((shdr.sampleType & 0x01) !== 0) {
+                                    } else if (sampleType === 1 || sampleType === 2 || sampleType === 4) {
                                         Logger.debug(
                                             'AlphaSynth',
                                             `Loading of used sample ${shdr.sampleName} for preset ${phdr.presetName} (bank ${preset.bank} program ${preset.presetNumber})`
                                         );
 
-                                        // Mono Sample
+                                        // Embedded mono or one side of a stereo pair. Each side owns its zone/pan.
                                         const decompressVorbis = (shdr.sampleType & 0x10) !== 0;
                                         if (decompressVorbis) {
                                             // for SF3 the shdr contains the byte offsets within the overall buffer holding the OGG container
@@ -1491,8 +1647,6 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                         zoneRegion.end = zoneRegion.samples.length - 1;
                                     } else {
                                         // unsupported
-                                        //  0x02: // Right Sample
-                                        //  0x04: // Left Sample
                                         //  0x08: // Linked Sample
                                         //  0x8001: // RomMonoSample
                                         //  0x8002: // RomRightSample
@@ -1506,6 +1660,12 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                     }
 
                                     preset.regions[regionIndex] = new Region(zoneRegion);
+                                    if (sampleType === 2 || sampleType === 4) {
+                                        stereoRegions.push({ region: preset.regions[regionIndex],
+                                            instrument: pgen.genAmount.wordAmount, presetZone: pbagIndex,
+                                            sampleId: igen.genAmount.wordAmount, sampleLink: shdr.sampleLink,
+                                            sampleType });
+                                    }
                                     regionIndex++;
 
                                     hadSampleId = true;
@@ -1517,10 +1677,10 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                             // Handle instrument's global zone.
                             if (ibag === hydra.ibags[inst.instBagNdx] && !hadSampleId) {
                                 instRegion = new Region(zoneRegion);
+                                instrumentGlobalModulators = instrumentLocalModulators;
                             }
 
-                            // Modulators (TODO)
-                            //if (ibag->instModNdx < ibag[1].instModNdx) addUnsupportedOpcode("any modulator");
+                            // Other modulator destinations still require a general note-on/controller engine.
                         }
 
                         hadGenInstrument = true;
@@ -1529,13 +1689,15 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                     }
                 }
 
-                // Modulators (TODO)
-                // if (pbag->modNdx < pbag[1].modNdx) addUnsupportedOpcode("any modulator");
-
                 // Handle preset's global zone.
                 if (pbag === hydra.pbags[phdr.presetBagNdx] && !hadGenInstrument) {
                     globalRegion = presetRegion;
+                    presetGlobalModulators = presetLocalModulators;
                 }
+            }
+            const rejectedStereoRegions = linkStereoSampleRegions(stereoRegions);
+            if (rejectedStereoRegions) {
+                Logger.warning('AlphaSynth', `Skipped ${rejectedStereoRegions} unmatched or incompatible stereo regions in ${preset.name}`);
             }
         }
 

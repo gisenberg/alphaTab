@@ -1,5 +1,6 @@
 import type { Hydra } from '@coderline/alphatab/synth/soundfont/Hydra';
 import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
+import type { MidiFile } from '@coderline/alphatab/midi/MidiFile';
 
 /**
  * Classes implementing this interface can act as main audio synthesis engine
@@ -7,6 +8,8 @@ import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent'
  * @internal
  */
 export interface IAudioSampleSynthesizer {
+    /** Prepare optional worker-owned routing before loading a new MIDI sequence. */
+    prepareMidi?(midi: MidiFile): void;
     /**
      * The master volume to produce.
      */

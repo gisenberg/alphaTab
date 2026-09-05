@@ -35,6 +35,20 @@ class FakeSynthWorker implements IAlphaSynthWorker {
 }
 
 describe('AlphaSynthWebWorkerApi', () => {
+    it('passes peak protection to the synthesis worker after settings serialization', () => {
+        const settings = new Settings();
+        settings.player.enablePeakLimiter = true;
+        settings.player.enableExperimentalGuitarAmp = true;
+        settings.player.releaseTailSeconds = 2;
+        const restored = JsonConverter.jsObjectToSettings(JsonConverter.settingsToJsObject(settings));
+        const worker = new FakeSynthWorker();
+        new AlphaSynthWebWorkerApi(new TestOutput(), restored, worker);
+        expect(worker.postedMessages).toContainEqual(expect.objectContaining({
+            cmd: 'alphaSynth.initialize', enablePeakLimiter: true, enableExperimentalGuitarAmp: true,
+            releaseTailSeconds: 2
+        }));
+    });
+
     it('returns the last loaded MIDI metadata without recursing', () => {
         const api = Object.create(AlphaSynthWebWorkerApi.prototype) as AlphaSynthWebWorkerApi;
         const loaded = new PositionChangedEventArgs(0, 1000, 0, 960, false, 120, 120);

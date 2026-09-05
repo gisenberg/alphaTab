@@ -3,6 +3,7 @@
 // TypeScript port for alphaTab: (C) 2020 by Daniel Kuschny
 // Licensed under: MPL-2.0
 import { SynthHelper } from '@coderline/alphatab/synth/SynthHelper';
+import type { LinearVelocityModulation } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
 
 /**
  * @internal
@@ -16,6 +17,8 @@ export class Envelope {
     public release: number = 0;
     public keynumToHold: number = 0;
     public keynumToDecay: number = 0;
+    public velocityToDecay?: LinearVelocityModulation;
+    public velocityToRelease?: LinearVelocityModulation;
 
     public constructor(other?: Envelope) {
         if (other) {
@@ -27,6 +30,8 @@ export class Envelope {
             this.release = other.release;
             this.keynumToHold = other.keynumToHold;
             this.keynumToDecay = other.keynumToDecay;
+            this.velocityToDecay = other.velocityToDecay;
+            this.velocityToRelease = other.velocityToRelease;
         }
     }
 
@@ -39,6 +44,8 @@ export class Envelope {
         this.release = 0;
         this.keynumToHold = 0;
         this.keynumToDecay = 0;
+        this.velocityToDecay = undefined;
+        this.velocityToRelease = undefined;
     }
 
     public envToSecs(sustainIsGain: boolean): void {
@@ -47,7 +54,9 @@ export class Envelope {
         // happier with zero values.
         this.delay = this.delay < -11950.0 ? 0.0 : SynthHelper.timecents2Secs(this.delay);
         this.attack = this.attack < -11950.0 ? 0.0 : SynthHelper.timecents2Secs(this.attack);
-        this.release = this.release < -11950.0 ? 0.0 : SynthHelper.timecents2Secs(this.release);
+        if (!this.velocityToRelease) {
+            this.release = this.release < -11950.0 ? 0.0 : SynthHelper.timecents2Secs(this.release);
+        }
 
         // If we have dynamic hold or decay times depending on key number we need
         // to keep the values in timecents so we can calculate it during startNote
@@ -55,7 +64,7 @@ export class Envelope {
             this.hold = this.hold < -11950.0 ? 0.0 : SynthHelper.timecents2Secs(this.hold);
         }
 
-        if (this.keynumToDecay === 0) {
+        if (this.keynumToDecay === 0 && !this.velocityToDecay) {
             this.decay = this.decay < -11950.0 ? 0.0 : SynthHelper.timecents2Secs(this.decay);
         }
 

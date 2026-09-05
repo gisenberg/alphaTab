@@ -35,7 +35,7 @@ export class Hydra {
         const key = `${startByte}_${endByte}_${decompressVorbis}`;
         if (!this._sampleCache.has(key)) {
             let samples: Float32Array;
-            const sampleBytes = this.sampleData.slice(
+            const sampleBytes = this.sampleData.subarray(
                 // The DWORD dwStart contains the index, in sample data points, from the beginning of the sample data
                 // field to the first data point of this sample
                 startByte,
@@ -65,7 +65,8 @@ export class Hydra {
         return this._sampleCache.get(key)!;
     }
 
-    public load(readable: IReadable): void {
+    /** Borrow only when the caller owns the input until all sample decoding completes. */
+    public load(readable: IReadable, borrowSampleData: boolean = false): void {
         const chunkHead: RiffChunk = new RiffChunk();
         const chunkFastList: RiffChunk = new RiffChunk();
         if (!RiffChunk.load(null, chunkHead, readable) || chunkHead.id !== 'sfbk') {
@@ -167,8 +168,18 @@ export class Hydra {
                 while (RiffChunk.load(chunkFastList, chunk, readable)) {
                     switch (chunk.id) {
                         case 'smpl':
-                            this.sampleData = new Uint8Array(chunk.size);
-                            readable.read(this.sampleData, 0, chunk.size);
+                            if (readable.position + chunk.size > readable.length) {
+                                throw new FormatError('Soundfont sample data is truncated');
+                            }
+                            if (borrowSampleData && readable instanceof ByteBuffer) {
+                                this.sampleData = readable.getBuffer().subarray(readable.position, readable.position + chunk.size);
+                                readable.position += chunk.size;
+                            } else {
+                                this.sampleData = new Uint8Array(chunk.size);
+                                if (readable.read(this.sampleData, 0, chunk.size) !== chunk.size) {
+                                    throw new FormatError('Soundfont sample data is truncated');
+                                }
+                            }
                             break;
                         default:
                             readable.position += chunk.size;
@@ -324,7 +335,7 @@ export class HydraPmod {
     public constructor(reader: IReadable) {
         this.modSrcOper = IOHelper.readUInt16LE(reader);
         this.modDestOper = IOHelper.readUInt16LE(reader);
-        this.modAmount = IOHelper.readUInt16LE(reader);
+        this.modAmount = IOHelper.readInt16LE(reader);
         this.modAmtSrcOper = IOHelper.readUInt16LE(reader);
         this.modTransOper = IOHelper.readUInt16LE(reader);
     }

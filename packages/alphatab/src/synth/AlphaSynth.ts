@@ -34,6 +34,8 @@ import type { Preset } from '@coderline/alphatab/synth/synthesis/Preset';
 import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
 import { TinySoundFont } from '@coderline/alphatab/synth/synthesis/TinySoundFont';
 import { TransportClock } from '@coderline/alphatab/synth/TransportClock';
+import { SamplePeakLimiterStream } from '@coderline/alphatab/synth/SamplePeakLimiterStream';
+import { SynthesisReleaseTail } from '@coderline/alphatab/synth/SynthesisReleaseTail';
 
 /**
  * This is the base class for synthesizer components which can be used to
@@ -63,6 +65,9 @@ export class AlphaSynthBase implements IAlphaSynth {
     protected midiEventsPlayedFilterSet: Set<MidiEventType> = new Set<MidiEventType>();
     private _notPlayedSamples: number = 0;
     private _synthStopping = false;
+    private _sampleLimiter?: SamplePeakLimiterStream;
+    private _releaseTail?: SynthesisReleaseTail;
+    private _releaseStarted: boolean = false;
     private _output: ISynthOutput;
     private _loadedMidiInfo?: PositionChangedEventArgs;
     private _currentPosition: PositionChangedEventArgs = new PositionChangedEventArgs(0, 0, 0, 0, false, 120, 120);
@@ -179,7 +184,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         // tell the output to reset the already synthesized buffers and request data again
         if (this.sequencer.isPlayingMain) {
             this._notPlayedSamples = 0;
-            this.output.resetSamples();
+            this._resetOutputSamples();
         }
     }
 
@@ -216,7 +221,8 @@ export class AlphaSynthBase implements IAlphaSynth {
      * @param output The output to use for playing the generated samples.
      * @internal
      */
-    public constructor(output: ISynthOutput, synthesizer: IAudioSampleSynthesizer, bufferTimeInMilliseconds: number) {
+    public constructor(output: ISynthOutput, synthesizer: IAudioSampleSynthesizer, bufferTimeInMilliseconds: number,
+        enablePeakLimiter: boolean = false, releaseTailSeconds: number = 0) {
         Logger.debug('AlphaSynth', 'Initializing player');
         this.state = PlayerState.Paused;
 
@@ -247,6 +253,12 @@ export class AlphaSynthBase implements IAlphaSynth {
         Logger.debug('AlphaSynth', 'Creating synthesizer');
         this.synthesizer = synthesizer;
         this.sequencer = new MidiFileSequencer(this.synthesizer);
+        if (releaseTailSeconds !== 0) {
+            this._releaseTail = new SynthesisReleaseTail(synthesizer.outSampleRate, releaseTailSeconds);
+        }
+        if (enablePeakLimiter) {
+            this._sampleLimiter = new SamplePeakLimiterStream(synthesizer.outSampleRate);
+        }
 
         Logger.debug('AlphaSynth', 'Opening output');
         this.output.ready.on(() => {
@@ -266,9 +278,19 @@ export class AlphaSynthBase implements IAlphaSynth {
     }
 
     protected onSampleRequest() {
+        // A very short final score segment can be shorter than lookahead.
+        // Generate ahead until there is audio or a real EOF, never an empty
+        // nonterminal chunk that could stall an output's refill accounting.
+        while (!this._renderSampleRequest()) {
+            // At most the limiter's bounded lookahead needs to be filled.
+        }
+    }
+
+    private _renderSampleRequest(): boolean {
+        const naturalRelease = this._usesReleaseTail();
         if (
             this.state === PlayerState.Playing &&
-            (!this.sequencer.isFinished || this.synthesizer.activeVoiceCount > 0)
+            (!this.sequencer.isFinished || (naturalRelease ? !this._releaseTail!.finished : this.synthesizer.activeVoiceCount > 0))
         ) {
             let samples: Float32Array = new Float32Array(
                 SynthConstants.MicroBufferSize * SynthConstants.MicroBufferCount * SynthConstants.AudioChannels
@@ -276,14 +298,17 @@ export class AlphaSynthBase implements IAlphaSynth {
             let bufferPos: number = 0;
 
             for (let i = 0; i < SynthConstants.MicroBufferCount; i++) {
+                const isTail = naturalRelease && this.sequencer.isFinished;
                 // synthesize buffer
-                this.sequencer.fillMidiEventQueue();
+                if (!isTail) { this.sequencer.fillMidiEventQueue(); }
                 const synthesizedEvents = this.synthesizer.synthesize(
                     samples,
                     bufferPos,
                     SynthConstants.MicroBufferSize
                 );
-                bufferPos += SynthConstants.MicroBufferSize * SynthConstants.AudioChannels;
+                const retained = isTail ? this._releaseTail!.process(samples, bufferPos,
+                    SynthConstants.MicroBufferSize, this.synthesizer.activeVoiceCount > 0) : SynthConstants.MicroBufferSize;
+                bufferPos += retained * SynthConstants.AudioChannels;
                 // push all processed events into the queue
                 // for informing users about played events
                 for (const e of synthesizedEvents) {
@@ -293,7 +318,15 @@ export class AlphaSynthBase implements IAlphaSynth {
                 }
                 // tell sequencer to check whether its work is done
                 if (this.sequencer.isFinished) {
-                    break;
+                    if (!naturalRelease) { break; }
+                    if (!this._releaseStarted) {
+                        this.synthesizer.noteOffAll(false);
+                        this._releaseStarted = true;
+                    }
+                    if (this._releaseTail!.finished) {
+                        this.synthesizer.synthesizeSilent(0);
+                        break;
+                    }
                 }
             }
 
@@ -301,9 +334,15 @@ export class AlphaSynthBase implements IAlphaSynth {
             if (bufferPos < samples.length) {
                 samples = samples.subarray(0, bufferPos);
             }
-            this._notPlayedSamples += samples.length;
-            const isFinal = this.sequencer.isFinished && this.synthesizer.activeVoiceCount === 0;
-            this.output.addSamples(samples, isFinal);
+            const isFinal = this.sequencer.isFinished &&
+                (naturalRelease ? this._releaseTail!.finished : this.synthesizer.activeVoiceCount === 0);
+            if (this._sampleLimiter) {
+                samples = this._sampleLimiter.process(samples, isFinal);
+            }
+            if (samples.length > 0 || isFinal) {
+                this._notPlayedSamples += samples.length;
+                this.output.addSamples(samples, isFinal);
+            }
 
             // if the sequencer finished, we instantly force a noteOff on all
             // voices to complete playback and stop voices fast.
@@ -314,14 +353,37 @@ export class AlphaSynthBase implements IAlphaSynth {
             // on the sample played area to ensure we seek back.
             // but thanks to this code we ensure the output will complete fast as we won't
             // be adding more samples beside a 0.1s ramp-down
-            if (this.sequencer.isFinished) {
+            if (this.sequencer.isFinished && !naturalRelease) {
                 this.synthesizer.noteOffAll(true);
             }
+            return samples.length > 0 || isFinal;
         } else {
             // Tell output that there is no data left for it.
-            const samples: Float32Array = new Float32Array(0);
+            let samples: Float32Array = new Float32Array(0);
+            // In-flight refill requests can arrive after pause cleared the output.
+            // They must not finalize the fresh processor reserved for the next play.
+            if (this.state === PlayerState.Playing && this._sampleLimiter && !this._sampleLimiter.finished) {
+                samples = this._sampleLimiter.process(samples, true);
+                this._notPlayedSamples += samples.length;
+            }
             this.output.addSamples(samples, true);
+            return true;
         }
+    }
+
+    private _resetOutputSamples(): void {
+        this._sampleLimiter?.reset();
+        this._resetReleaseTail();
+        this.output.resetSamples();
+    }
+
+    private _resetReleaseTail(): void {
+        this._releaseTail?.reset();
+        this._releaseStarted = false;
+    }
+
+    private _usesReleaseTail(): boolean {
+        return !!this._releaseTail && this.sequencer.isPlayingMain && !this.isLooping && !this.sequencer.mainPlaybackRange;
     }
 
     public play(): boolean {
@@ -362,7 +424,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         this.sequencer.resetCountIn();
         this.timePosition = this.sequencer.currentTime;
         this.playInternal();
-        this.output.resetSamples();
+        this._resetOutputSamples();
     }
 
     /**
@@ -395,6 +457,8 @@ export class AlphaSynthBase implements IAlphaSynth {
             new PlayerStateChangedEventArgs(this.state, false)
         );
         this.output.pause();
+        this._sampleLimiter?.reset();
+        this._resetReleaseTail();
         this.synthesizer.noteOffAll(false);
         // Web Audio outputs discard queued audio when paused. Rewind synthesis to the
         // last frame that actually reached the speakers so resume cannot skip ahead.
@@ -422,6 +486,8 @@ export class AlphaSynthBase implements IAlphaSynth {
         this._transportClock.pause(this._timePosition);
         this.output.pause();
         this._notPlayedSamples = 0;
+        this._sampleLimiter?.reset();
+        this._resetReleaseTail();
         this.sequencer.stop();
         this.synthesizer.noteOffAll(true);
         this.tickPosition = this.sequencer.mainPlaybackRange ? this.sequencer.mainPlaybackRange.startTick : 0;
@@ -446,7 +512,7 @@ export class AlphaSynthBase implements IAlphaSynth {
 
         // tell the output to reset the already synthesized buffers and request data again
         this._notPlayedSamples = 0;
-        this.output.resetSamples();
+        this._resetOutputSamples();
 
         this.output.activate();
         this._synthStopping = false;
@@ -533,6 +599,7 @@ export class AlphaSynthBase implements IAlphaSynth {
         try {
             Logger.debug('AlphaSynth', 'Loading midi from model');
             const playbackRange = this.sequencer.mainPlaybackRange;
+            this.synthesizer.prepareMidi?.(midi);
             this.sequencer.loadMidi(midi);
             // Loading MIDI replaces the sequencer's main state. Preserve the
             // configured range so the synth stays aligned with the public
@@ -608,6 +675,9 @@ export class AlphaSynthBase implements IAlphaSynth {
             endTick = this.sequencer.currentEndTick;
         }
 
+        if (this._usesReleaseTail() && this.sequencer.isFinished && !this._releaseTail!.finished) {
+            return;
+        }
         if (this._tickPosition >= endTick) {
             // fully done with playback of remaining samples?
             if (this._notPlayedSamples <= 0) {
@@ -616,7 +686,7 @@ export class AlphaSynthBase implements IAlphaSynth {
                     this.finishCountIn();
                 } else if (this.sequencer.isPlayingOneTimeMidi) {
                     Logger.debug('AlphaSynth', 'Finished playback (one time)');
-                    this.output.resetSamples();
+                    this._resetOutputSamples();
                     this.state = PlayerState.Paused;
                     this._stopOneTimeMidi();
                 } else if (this.isLooping) {
@@ -651,7 +721,7 @@ export class AlphaSynthBase implements IAlphaSynth {
 
     private _stopOneTimeMidi() {
         this.output.pause();
-        this.output.resetSamples();
+        this._resetOutputSamples();
         this.synthesizer.noteOffAll(true);
         this.sequencer.resetOneTimeMidi();
         this.timePosition = this.sequencer.currentTime;
@@ -791,8 +861,10 @@ export class AlphaSynth extends AlphaSynthBase {
      * Initializes a new instance of the {@link AlphaSynth} class.
      * @param output The output to use for playing the generated samples.
      */
-    public constructor(output: ISynthOutput, bufferTimeInMilliseconds: number) {
-        super(output, new TinySoundFont(output.sampleRate), bufferTimeInMilliseconds);
+    public constructor(output: ISynthOutput, bufferTimeInMilliseconds: number, enablePeakLimiter: boolean = false,
+        enableExperimentalGuitarAmp: boolean = false, releaseTailSeconds: number = 0) {
+        super(output, new TinySoundFont(output.sampleRate, enableExperimentalGuitarAmp), bufferTimeInMilliseconds,
+            enablePeakLimiter, releaseTailSeconds);
     }
 
     /**
@@ -872,10 +944,18 @@ export interface IAlphaSynthAudioExporter {
 export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
     private _synth: TinySoundFont;
     private _sequencer: MidiFileSequencer;
+    private _limiter?: SamplePeakLimiterStream;
+    private _outputFrames: number = 0;
+    private readonly _releaseTail: SynthesisReleaseTail;
+    private _releaseStarted: boolean = false;
 
     constructor(options: AudioExportOptions) {
-        this._synth = new TinySoundFont(options.sampleRate);
+        this._synth = new TinySoundFont(options.sampleRate, options.enableExperimentalGuitarAmp);
+        this._releaseTail = new SynthesisReleaseTail(options.sampleRate, options.releaseTailSeconds ?? 0);
         this._sequencer = new MidiFileSequencer(this._synth);
+        if (options.enablePeakLimiter) {
+            this._limiter = new SamplePeakLimiterStream(options.sampleRate);
+        }
 
         this._synth.masterVolume = Math.max(options.masterVolume, SynthConstants.MinVolume);
         this._synth.metronomeVolume = Math.max(options.metronomeVolume, SynthConstants.MinVolume);
@@ -888,7 +968,9 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
     public loadSoundFont(data: Uint8Array) {
         const input: ByteBuffer = ByteBuffer.fromBuffer(data);
         const soundFont: Hydra = new Hydra();
-        soundFont.load(input);
+        // Export eagerly decodes selected samples below and does not retain Hydra.
+        // Unlike the live bank, it can borrow the source bytes for this synchronous call.
+        soundFont.load(input, true);
 
         const programs = this._sequencer.instrumentPrograms;
         const percussionKeys = this._sequencer.percussionKeys;
@@ -912,6 +994,7 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
     public limitExport(range: PlaybackRange) {
         this._sequencer.mainPlaybackRange = range;
         this._sequencer.mainSeek(this._sequencer.mainTickPositionToTimePosition(range.startTick));
+        this._resetOutput();
     }
 
     /**
@@ -938,7 +1021,17 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
      * @param midi The midi file.
      */
     public loadMidiFile(midi: MidiFile) {
+        this._synth.prepareMidi(midi);
         this._sequencer.loadMidi(midi);
+        this._resetOutput();
+    }
+
+    private _resetOutput(): void {
+        this._limiter?.reset();
+        this._releaseTail.reset();
+        this._releaseStarted = false;
+        this._outputFrames = 0;
+        this._generatedAudioFrames = 0;
     }
 
     /**
@@ -959,7 +1052,7 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
         this._synth.channelSetMixVolume(channel, volume);
     }
 
-    private _generatedAudioCurrentTime: number = 0;
+    private _generatedAudioFrames: number = 0;
     private _generatedAudioEndTime: number = 0;
 
     public setup() {
@@ -982,7 +1075,30 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
     }
 
     public render(milliseconds: number): AudioExportChunk | undefined {
-        if (this._sequencer.isFinished) {
+        if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
+            throw new Error('Export duration must be positive and finite');
+        }
+        for (;;) {
+            const chunk = this._render(milliseconds);
+            if (!chunk) {
+                return undefined;
+            }
+            if (this._limiter) {
+                chunk.samples = this._limiter.process(chunk.samples, this._sequencer.isFinished && this._releaseTail.finished);
+            }
+            // A request shorter than lookahead must generate ahead, not expose a
+            // spurious empty chunk or insert silence into the exported timeline.
+            if (chunk.samples.length === 0) {
+                continue;
+            }
+            chunk.currentTime = this._outputFrames * 1000 / this._synth.outSampleRate;
+            this._outputFrames += chunk.samples.length / SynthConstants.AudioChannels;
+            return chunk;
+        }
+    }
+
+    private _render(milliseconds: number): AudioExportChunk | undefined {
+        if (this._sequencer.isFinished && this._releaseTail.finished) {
             return undefined;
         }
 
@@ -996,10 +1112,11 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
         const syncPoints = this._sequencer.currentSyncPoints;
 
         let bufferPos: number = 0;
-        let subBufferTime = this._generatedAudioCurrentTime;
         for (let i = 0; i < microBufferCount; i++) {
+            const isTail = this._sequencer.isFinished;
             // if we're applying sync points, we calculate the needed tempo and set the playback speed
-            if (syncPoints.length > 0) {
+            if (!isTail && syncPoints.length > 0) {
+                const subBufferTime = (this._generatedAudioFrames + i * SynthConstants.MicroBufferSize) * 1000 / this._synth.outSampleRate;
                 this._sequencer.currentUpdateSyncPoints(subBufferTime);
                 this._sequencer.currentUpdateCurrentTempo(this._sequencer.currentTime);
                 const newSpeed = this._sequencer.syncPointTempo / this._sequencer.currentTempo;
@@ -1008,14 +1125,22 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
                 }
             }
 
-            this._sequencer.fillMidiEventQueue();
+            if (!isTail) { this._sequencer.fillMidiEventQueue(); }
             this._synth.synthesize(samples, bufferPos, SynthConstants.MicroBufferSize);
 
-            bufferPos += SynthConstants.MicroBufferSize * SynthConstants.AudioChannels;
-            subBufferTime += oneMicroBufferMillis;
+            const retained = isTail ? this._releaseTail.process(samples, bufferPos,
+                SynthConstants.MicroBufferSize, this._synth.activeVoiceCount > 0) : SynthConstants.MicroBufferSize;
+            bufferPos += retained * SynthConstants.AudioChannels;
 
             if (this._sequencer.isFinished) {
-                break;
+                if (!this._releaseStarted) {
+                    this._synth.noteOffAll(false);
+                    this._releaseStarted = true;
+                }
+                if (this._releaseTail.finished) {
+                    this._synth.synthesizeSilent(0);
+                    break;
+                }
             }
         }
 
@@ -1025,19 +1150,17 @@ export class AlphaSynthAudioExporter implements IAlphaSynthAudioExporter {
 
         const chunk = new AudioExportChunk();
 
-        chunk.currentTime = this._generatedAudioCurrentTime;
+        chunk.currentTime = this._generatedAudioFrames * 1000 / this._synth.outSampleRate;
         chunk.endTime = this._generatedAudioEndTime;
 
         chunk.currentTick = this._sequencer.currentTimePositionToTickPosition(this._sequencer.currentTime);
         chunk.endTick = this._sequencer.currentEndTick;
 
-        this._generatedAudioCurrentTime += milliseconds;
+        // render() rounds requests up to microbuffers. Accumulate actual audio,
+        // otherwise sync-point timing drifts on requests such as 1 ms at 44.1 kHz.
+        this._generatedAudioFrames += bufferPos / SynthConstants.AudioChannels;
 
         chunk.samples = samples;
-
-        if (this._sequencer.isFinished) {
-            this._synth.noteOffAll(true);
-        }
 
         return chunk;
     }

@@ -52,6 +52,9 @@ export class PlayerSettingsSerializer {
         o.set("playtripletfeel", obj.playTripletFeel);
         o.set("buffertimeinmilliseconds", obj.bufferTimeInMilliseconds);
         o.set("minimumsamplerate", obj.minimumSampleRate);
+        o.set("enablepeaklimiter", obj.enablePeakLimiter);
+        o.set("enableexperimentalguitaramp", obj.enableExperimentalGuitarAmp);
+        o.set("releasetailseconds", obj.releaseTailSeconds);
         return o;
     }
     public static setProperty(obj: PlayerSettings, property: string, v: unknown): boolean {
@@ -129,6 +132,15 @@ export class PlayerSettingsSerializer {
                 return true;
             case "minimumsamplerate":
                 obj.minimumSampleRate = v! as number;
+                return true;
+            case "enablepeaklimiter":
+                obj.enablePeakLimiter = v! as boolean;
+                return true;
+            case "enableexperimentalguitaramp":
+                obj.enableExperimentalGuitarAmp = v! as boolean;
+                return true;
+            case "releasetailseconds":
+                obj.releaseTailSeconds = v! as number;
                 return true;
         }
         if (["vibrato"].indexOf(property) >= 0) {

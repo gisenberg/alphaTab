@@ -4,6 +4,7 @@
 // Licensed under: MPL-2.0
 import { Envelope } from '@coderline/alphatab/synth/synthesis/Envelope';
 import { SynthHelper } from '@coderline/alphatab/synth/SynthHelper';
+import { linearVelocityValue } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
 
 /**
  * @internal
@@ -24,6 +25,7 @@ export enum VoiceEnvelopeSegment {
  */
 export class VoiceEnvelope {
     private static readonly _fastReleaseTime: number = 0.01;
+    private static readonly _amplitudeDecayRange: number = 9.226;
 
     public level: number = 0;
     public slope: number = 0;
@@ -100,7 +102,7 @@ export class VoiceEnvelope {
 
                         if (this.isAmpEnv) {
                             // I don't truly understand this; just following what LinuxSampler does.
-                            const mysterySlope: number = -9.226 / this.samplesUntilNextSegment;
+                            const mysterySlope: number = -VoiceEnvelope._amplitudeDecayRange / this.samplesUntilNextSegment;
                             this.slope = Math.exp(mysterySlope);
                             this.segmentIsExponential = true;
                             if (this.parameters.sustain > 0.0) {
@@ -166,28 +168,47 @@ export class VoiceEnvelope {
         midiNoteNumber: number,
         midiVelocity: number,
         isAmpEnv: boolean,
-        outSampleRate: number
+        outSampleRate: number,
+        palmMute: boolean = false
     ): void {
         this.parameters = new Envelope(newParameters);
-        if (this.parameters.keynumToHold > 0) {
+        if (this.parameters.keynumToHold !== 0) {
             this.parameters.hold += this.parameters.keynumToHold * (60.0 - midiNoteNumber);
             this.parameters.hold =
                 this.parameters.hold < -10000.0 ? 0.0 : SynthHelper.timecents2Secs(this.parameters.hold);
         }
 
-        if (this.parameters.keynumToDecay > 0) {
+        if (this.parameters.velocityToDecay) {
+            // Add key and velocity offsets in timecents before conversion, exactly once.
+            const timecents = this.parameters.decay + this.parameters.keynumToDecay * (60 - midiNoteNumber) +
+                linearVelocityValue(this.parameters.velocityToDecay, midiVelocity);
+            this.parameters.decay = timecents < -11950 ? 0 : SynthHelper.timecents2Secs(Math.min(8000, timecents));
+        } else if (this.parameters.keynumToDecay !== 0) {
             this.parameters.decay += this.parameters.keynumToDecay * (60.0 - midiNoteNumber);
             this.parameters.decay =
                 this.parameters.decay < -10000.0 ? 0.0 : SynthHelper.timecents2Secs(this.parameters.decay);
         }
 
+        if (this.parameters.velocityToRelease) {
+            const timecents = this.parameters.release + linearVelocityValue(this.parameters.velocityToRelease, midiVelocity);
+            this.parameters.release = timecents < -11950 ? 0 : SynthHelper.timecents2Secs(Math.min(8000, timecents));
+        }
+
+        if (palmMute && isAmpEnv) {
+            // The sequencer already gives palm-muted notes a short gate. Keep
+            // the source's pitched body during that gate; an additional decay
+            // double-damps it and buries fast passages in the band mix.
+            // Per-voice filtering supplies the darker tone, and this short
+            // release stops the string promptly when its note-off arrives.
+            this.parameters.release = Math.min(this.parameters.release, 0.025);
+        }
         this.midiVelocity = midiVelocity | 0;
         this.isAmpEnv = isAmpEnv;
         this.nextSegment(VoiceEnvelopeSegment.None, outSampleRate);
     }
 
     public process(numSamples: number, outSampleRate: number): void {
-        if (this.slope > 0) {
+        if (this.slope !== 0) {
             if (this.segmentIsExponential) {
                 this.level *= Math.pow(this.slope, numSamples);
             } else {

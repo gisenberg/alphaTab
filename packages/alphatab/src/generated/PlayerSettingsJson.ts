@@ -327,4 +327,25 @@ export interface PlayerSettingsJson {
      * context is recreated with this sample rate. The default of `0` keeps the platform default.
      */
     minimumSampleRate?: number;
+    /**
+     * Enables stereo-linked sample-peak protection in the synthesis worker.
+     * Lookahead is generated ahead without delaying the audible transport timeline.
+     * Applies to synthesized audio, not embedded backing media.
+     * @default `false`
+     */
+    enablePeakLimiter?: boolean;
+    /**
+     * Opts into experimental worker-owned guitar processing for GM29/30 notes.
+     * Other programs remain dry; not applied to embedded backing media.
+     * Recreate the player after changing this option.
+     * @default `false`
+     */
+    enableExperimentalGuitarAmp?: boolean;
+    /**
+     * Maximum natural release after full-song synthesis, in seconds (0 to 30).
+     * Zero preserves the immediate finish. Loops, ranges and count-ins remain immediate.
+     * Recreate the player after changing this option. Does not affect backing media.
+     * @default `0`
+     */
+    releaseTailSeconds?: number;
 }

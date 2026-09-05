@@ -70,6 +70,9 @@ export type IAlphaSynthWorkerMessage =
           sampleRate: number;
           logLevel: LogLevel;
           bufferTimeInMilliseconds: number;
+          enablePeakLimiter?: boolean;
+          enableExperimentalGuitarAmp?: boolean;
+          releaseTailSeconds?: number;
           sharedSampleBuffer?: SharedSampleBufferDescriptor;
       }
     | { cmd: 'alphaSynth.output.attachWorkletPort'; port: MessagePort }

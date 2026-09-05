@@ -1,9 +1,48 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MetronomeClick } from '@coderline/alphatab/synth/MetronomeClick';
 import { TinySoundFont } from '@coderline/alphatab/synth/synthesis/TinySoundFont';
 import { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
 
 describe('bank-independent metronome', () => {
+    it('uses the same continuous-time strike at different device sample rates', () => {
+        for (const accent of [false, true]) {
+            const low = MetronomeClick.createSamples(24000, accent);
+            const high = MetronomeClick.createSamples(48000, accent);
+            let difference = 0;
+            let energy = 0;
+            for (let i = 0; i < low.length; i++) {
+                difference += (low[i] - high[i * 2]) ** 2;
+                energy += low[i] ** 2;
+            }
+            // A new random sequence per device rate would radically change the
+            // strike. Only tiny envelope/normalization discretization is allowed.
+            expect(difference / energy).toBeLessThan(0.00001);
+        }
+    });
+
+    it('prepares the two click buffers before synthesis and reuses them on every beat', () => {
+        const generate = vi.spyOn(MetronomeClick, 'createSamples');
+        try {
+            const synth = new TinySoundFont(48000);
+            expect(generate).toHaveBeenCalledTimes(2);
+            generate.mockClear();
+            synth.metronomeVolume = 1;
+            for (let beat = 0; beat < 8; beat++) {
+                synth.dispatchEvent(SynthEvent.newMetronomeEvent(0, 0, beat % 4, 960, 500));
+                synth.synthesize(new Float32Array(256), 0, 128);
+            }
+            expect(generate).not.toHaveBeenCalled();
+        } finally {
+            generate.mockRestore();
+        }
+    });
+
+    it('rejects sample rates that would produce unbounded or aliased buffers', () => {
+        for (const rate of [NaN, Infinity, 0, 7999, 192001]) {
+            expect(() => MetronomeClick.createSamples(rate, false)).toThrow();
+        }
+    });
+
     for (const sampleRate of [22050, 44100, 48000, 96000]) {
         it(`has a bounded, decaying and accented waveform at ${sampleRate} Hz`, () => {
             const regular = MetronomeClick.createSamples(sampleRate, false);

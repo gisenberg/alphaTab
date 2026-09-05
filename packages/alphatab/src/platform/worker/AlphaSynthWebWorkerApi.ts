@@ -311,6 +311,9 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
             sampleRate: this._output.sampleRate,
             logLevel: settings.core.logLevel,
             bufferTimeInMilliseconds: settings.player.bufferTimeInMilliseconds,
+            enablePeakLimiter: settings.player.enablePeakLimiter,
+            enableExperimentalGuitarAmp: settings.player.enableExperimentalGuitarAmp,
+            releaseTailSeconds: settings.player.releaseTailSeconds,
             sharedSampleBuffer: sharedSampleBuffer ?? undefined
         });
         this.masterVolume = 1;
