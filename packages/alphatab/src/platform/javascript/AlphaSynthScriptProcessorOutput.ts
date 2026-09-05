@@ -1,6 +1,7 @@
 import { CircularSampleBuffer } from '@coderline/alphatab/synth/ds/CircularSampleBuffer';
 import { AlphaSynthWebAudioOutputBase } from '@coderline/alphatab/platform/javascript/AlphaSynthWebAudioOutputBase';
 import { SynthConstants } from '@coderline/alphatab/synth/SynthConstants';
+import { OutputLevelMeter } from '@coderline/alphatab/synth/OutputLevelMeter';
 import {
     calculateWebAudioBufferCount,
     calculateWebAudioRequestBufferCount,
@@ -23,9 +24,11 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     private _diagnosticOutputFrames: number = 0;
     private _hasReceivedSamples: boolean = false;
     private _finalBufferReceived: boolean = false;
+    private _meter!: OutputLevelMeter;
 
     public override open(bufferTimeInMilliseconds: number) {
         super.open(bufferTimeInMilliseconds);
+        this._meter = new OutputLevelMeter(this.sampleRate);
         this._bufferCount = calculateWebAudioBufferCount(
             bufferTimeInMilliseconds,
             this.sampleRate,
@@ -58,6 +61,7 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     }
 
     public override pause(): void {
+        this._meter.reset();
         this._diagnostics.recordBufferDepth(0);
         this._publishDiagnostics(true);
         super.pause();
@@ -81,6 +85,8 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
     }
 
     public resetSamples(): void {
+        this._meter.reset();
+        this.outputLevel = null;
         this._circularBuffer.clear();
         this._requestedBufferCount = 0;
         this._hasReceivedSamples = false;
@@ -122,6 +128,10 @@ export class AlphaSynthScriptProcessorOutput extends AlphaSynthWebAudioOutputBas
         interleavedSamplesToRead -= interleavedSamplesToRead % SynthConstants.AudioChannels;
         const samplesFromBuffer = this._circularBuffer.read(buffer, 0, interleavedSamplesToRead);
         const playedFrames = writeInterleavedStereoSamples(buffer, samplesFromBuffer, left, right);
+        const level = this._meter.push(left, right);
+        if (level) {
+            this.outputLevel = level;
+        }
 
         if (this._hasReceivedSamples) {
             const finalTail = this._finalBufferReceived && playedFrames < left.length;

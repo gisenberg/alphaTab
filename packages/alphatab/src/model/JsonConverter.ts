@@ -216,7 +216,8 @@ export class JsonConverter {
                     JsonHelper.getValue(midiEvent, 'channel') as number,
                     JsonHelper.getValue(midiEvent, 'noteKey') as number,
                     JsonHelper.getValue(midiEvent, 'noteVelocity') as number,
-                    JsonHelper.getValue(midiEvent, 'isPalmMute') === true
+                    JsonHelper.getValue(midiEvent, 'isPalmMute') === true,
+                    JsonHelper.getValue(midiEvent, 'isPercussionChoke') === true
                 );
             case MidiEventType.NoteOff:
                 return new NoteOffEvent(
@@ -224,7 +225,8 @@ export class JsonConverter {
                     tick,
                     JsonHelper.getValue(midiEvent, 'channel') as number,
                     JsonHelper.getValue(midiEvent, 'noteKey') as number,
-                    JsonHelper.getValue(midiEvent, 'noteVelocity') as number
+                    JsonHelper.getValue(midiEvent, 'noteVelocity') as number,
+                    JsonHelper.getValue(midiEvent, 'isPercussionChoke') === true
                 );
             case MidiEventType.ControlChange:
                 return new ControlChangeEvent(
@@ -333,6 +335,9 @@ export class JsonConverter {
                 o.set('noteVelocity', (midiEvent as NoteEvent).noteVelocity);
                 if (midiEvent.type === MidiEventType.NoteOn && (midiEvent as NoteOnEvent).isPalmMute) {
                     o.set('isPalmMute', true);
+                }
+                if ((midiEvent as NoteOnEvent | NoteOffEvent).isPercussionChoke) {
+                    o.set('isPercussionChoke', true);
                 }
                 break;
             case MidiEventType.ControlChange:

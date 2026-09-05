@@ -64,13 +64,14 @@ export class VoiceEnvelope {
                 case VoiceEnvelopeSegment.Delay:
                     this.samplesUntilNextSegment = (this.parameters.attack * outSampleRate) | 0;
 
-                    if (this.samplesUntilNextSegment > 0) {
-                        if (!this.isAmpEnv) {
-                            // mod env attack duration scales with velocity (velocity of 1 is full duration, max velocity is 0.125 times duration)
-                            this.samplesUntilNextSegment =
-                                (this.parameters.attack * ((145 - this.midiVelocity) / 144.0) * outSampleRate) | 0;
-                        }
+                    if (!this.isAmpEnv) {
+                        // Apply velocity before testing the quantized duration: a
+                        // positive attack can become shorter than one output sample.
+                        this.samplesUntilNextSegment =
+                            (this.parameters.attack * ((145 - this.midiVelocity) / 144.0) * outSampleRate) | 0;
+                    }
 
+                    if (this.samplesUntilNextSegment > 0) {
                         this.segment = VoiceEnvelopeSegment.Attack;
                         this.segmentIsExponential = false;
                         this.level = 0.0;

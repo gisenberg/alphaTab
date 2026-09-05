@@ -170,6 +170,7 @@ export class WebAudioHelper {
  * @internal
  */
 export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
+    public outputLevel: ISynthOutput['outputLevel'] = null;
     protected static readonly BufferSize: number = 4096;
     protected static readonly PreferredSampleRate: number = 44100;
 
@@ -179,6 +180,7 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
 
     private _resumeHandler?: () => void;
     private _sourceStarted: boolean = false;
+    private _activationGeneration: number = 0;
     private _playbackFailureCount: number = 0;
     private _lastPlaybackFailure: string | null = null;
     private _bufferDiagnostics: SynthOutputDiagnostics = {
@@ -219,10 +221,22 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
             this.context = WebAudioHelper.createAudioContext(this.minimumSampleRate);
         }
 
-        if (this.context.state === 'suspended' || (this.context.state as string) === 'interrupted') {
+        const context = this.context;
+        const generation = ++this._activationGeneration;
+        if (context.state === 'suspended' || (context.state as string) === 'interrupted') {
             Logger.debug('WebAudio', 'Audio Context is suspended, trying resume');
-            this.context.resume().then(
+            let resumed: Promise<void>;
+            try {
+                resumed = context.resume();
+            } catch (error) {
+                // Report after play() has finished setting up its source, so pause can cancel that setup too.
+                resumed = Promise.reject(error);
+            }
+            void resumed.then(
                 () => {
+                    if (context !== this.context || generation !== this._activationGeneration) {
+                        return;
+                    }
                     Logger.debug(
                         'WebAudio',
                         `Audio Context resume success: state=${this.context?.state}, sampleRate:${this.context?.sampleRate}`
@@ -232,10 +246,15 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
                     }
                 },
                 reason => {
+                    if (context !== this.context || generation !== this._activationGeneration) {
+                        return;
+                    }
                     Logger.warning(
                         'WebAudio',
                         `Audio Context resume failed: state=${this.context?.state}, sampleRate:${this.context?.sampleRate}, reason=${reason}`
                     );
+                    this.pause();
+                    this.onPlaybackFailed(reason instanceof Error ? reason : new Error(String(reason)));
                 }
             );
         }
@@ -304,6 +323,8 @@ export abstract class AlphaSynthWebAudioOutputBase implements ISynthOutput {
     }
 
     public pause(): void {
+        this._activationGeneration++;
+        this.outputLevel = null;
         if (this.source) {
             if (this._sourceStarted) {
                 this.source.stop(0);

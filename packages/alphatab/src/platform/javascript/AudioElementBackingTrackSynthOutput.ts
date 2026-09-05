@@ -11,6 +11,8 @@ import type { IBackingTrackSynthOutput } from '@coderline/alphatab/synth/Backing
 import type { ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
 import { TransportClock } from '@coderline/alphatab/synth/TransportClock';
 import { MetronomeClick } from '@coderline/alphatab/synth/MetronomeClick';
+import type { Settings } from '@coderline/alphatab/Settings';
+import { BrowserUiFacade } from '@coderline/alphatab/platform/javascript/BrowserUiFacade';
 
 /**
  * A {@link IBackingTrackSynthOutput} which uses a HTMLAudioElement as playback mechanism.
@@ -32,6 +34,7 @@ export interface IAudioElementBackingTrackSynthOutput extends IBackingTrackSynth
  * @internal
  */
 export class AudioElementBackingTrackSynthOutput implements IAudioElementBackingTrackSynthOutput {
+    public outputLevel: IBackingTrackSynthOutput['outputLevel'] = null;
     // fake rate
     public readonly sampleRate: number = 44100;
 
@@ -39,6 +42,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _updateInterval: number = 0;
     private _objectUrl: string | null = null;
     private _playGeneration: number = 0;
+    private _activationGeneration: number = 0;
     private _clickContext: AudioContext | null = null;
     private _clickMasterGain: GainNode | null = null;
     private _scheduledClicks: Set<AudioBufferSourceNode> = new Set<AudioBufferSourceNode>();
@@ -46,6 +50,29 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _countInTimer: number = 0;
     private _outputDeviceChange: Promise<void> = Promise.resolve();
     private _destroyed: boolean = false;
+    private _meterActive: boolean = false;
+    private readonly _settings: Settings | null;
+    private _mediaSource: MediaElementAudioSourceNode | null = null;
+    private _mixer: AudioWorkletNode | null = null;
+    private _mixerFaulted: boolean = false;
+    private _masterVolume: number = 1;
+    private _endObservedAt: number | null = null;
+
+    public constructor(settings: Settings | null = null) {
+        this._settings = settings;
+    }
+
+    private get _usesMixer(): boolean {
+        return this._settings?.player.enablePeakLimiter ?? false;
+    }
+
+    public get outputLatencyMilliseconds(): number {
+        const context = this._clickContext;
+        return this._usesMixer && context
+            ? ((context.baseLatency || 0) + (context.outputLatency || 0)) * 1000
+                + Math.ceil(context.sampleRate * 0.003) / context.sampleRate * 1000
+            : 0;
+    }
     /** Anchors click scheduling to the media position between coarse time updates. */
     private readonly _transportClock: TransportClock = new TransportClock();
 
@@ -64,18 +91,23 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public get masterVolume(): number {
-        return this.audioElement.volume;
+        return this._usesMixer ? this._masterVolume : this.audioElement.volume;
     }
 
     public set masterVolume(value: number) {
-        this.audioElement.volume = value;
+        value = Number.isFinite(value) ? Math.max(0, Math.min(this._usesMixer ? 3 : 1, value)) : 1;
+        this._masterVolume = value;
+        this.audioElement.volume = this._usesMixer ? 1 : value;
         if (this._clickMasterGain && this._clickContext) {
             this._clickMasterGain.gain.setValueAtTime(value, this._clickContext.currentTime);
         }
     }
 
     public seekTo(time: number): void {
+        this.outputLevel = null;
+        this._endObservedAt = null;
         this.cancelScheduledMetronomeClicks();
+        this._mixer?.port.postMessage({ cmd: 'alphaSynth.output.resetSamples' });
         this._transportClock.seek(time);
         this.audioElement.currentTime = time / 1000;
     }
@@ -94,6 +126,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
 
     public open(_bufferTimeInMilliseconds: number): void {
         this._destroyed = false;
+        this._mixerFaulted = false;
         const audioElement = document.createElement('audio');
         audioElement.style.display = 'none';
         document.body.appendChild(audioElement);
@@ -104,16 +137,82 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
             this._updatePosition();
         });
         this.audioElement = audioElement;
-        (this.ready as EventEmitter).trigger();
+        if (this._usesMixer) {
+            void this._initializeMixer();
+        } else {
+            (this.ready as EventEmitter).trigger();
+        }
+    }
+
+    private async _initializeMixer(): Promise<void> {
+        let context: AudioContext | null = null;
+        try {
+            context = this._ensureClickContext();
+            this._mediaSource = context.createMediaElementSource(this.audioElement);
+            this.audioElement.volume = 1;
+            this._mediaSource.connect(this._clickMasterGain!);
+            await BrowserUiFacade.createAlphaSynthAudioWorklet(context, this._settings!);
+            if (this._destroyed || context !== this._clickContext) {
+                return;
+            }
+            this._mixer = new AudioWorkletNode(context, 'alphatab-mixer', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [2],
+                channelCount: 2,
+                channelCountMode: 'explicit',
+                channelInterpretation: 'speakers'
+            });
+            this._mixer.addEventListener('processorerror', () => {
+                if (!this._destroyed) {
+                    this._mixerFaulted = true;
+                    this.pause();
+                    (this.playbackFailed as EventEmitterOfT<Error>).trigger(new Error('Backing output limiter failed'));
+                }
+            });
+            this._mixer.port.addEventListener('message', event => {
+                if (this._meterActive && !this._destroyed && !this._mixerFaulted && event.data.cmd === 'alphaSynth.output.level') {
+                    this.outputLevel = event.data.level;
+                }
+            });
+            this._mixer.port.start();
+            this._clickMasterGain!.connect(this._mixer);
+            this._mixer.connect(context.destination);
+            (this.ready as EventEmitter).trigger();
+        } catch (error) {
+            if (!this._destroyed && (!context || context === this._clickContext)) {
+                this._mixerFaulted = true;
+                // Never fall back to an unprotected or double-routed boosted signal.
+                (this.playbackFailed as EventEmitterOfT<Error>).trigger(
+                    error instanceof Error ? error : new Error(String(error))
+                );
+            }
+        }
     }
 
     private _updatePosition() {
         const timePos = this.audioElement.currentTime * 1000;
         this._transportClock.observe(timePos);
-        (this.timeUpdate as EventEmitterOfT<number>).trigger(timePos);
+        let limiterDelay = this._mixer && this._clickContext && (this.audioElement.paused !== true || this.audioElement.ended)
+            ? Math.ceil(this._clickContext.sampleRate * 0.003) / this._clickContext.sampleRate * 1000
+            : 0;
+        if (this.audioElement.ended && this._clickContext) {
+            // Media time stops at EOF but the worklet must still drain its delay.
+            // Permanently subtracting lookahead would prevent the player finishing.
+            this._endObservedAt ??= this._clickContext.currentTime;
+            limiterDelay = Math.max(0, limiterDelay - (this._clickContext.currentTime - this._endObservedAt) * 1000);
+        } else {
+            this._endObservedAt = null;
+        }
+        (this.timeUpdate as EventEmitterOfT<number>).trigger(Math.max(0, timePos - limiterDelay * this.playbackRate));
     }
 
     public play(): void {
+        this._meterActive = true;
+        if (this._usesMixer && (!this._mixer || this._mixerFaulted)) {
+            (this.playbackFailed as EventEmitterOfT<Error>).trigger(new Error('Backing output limiter is not ready'));
+            return;
+        }
         const playGeneration = ++this._playGeneration;
         this._clearCountInTimer();
         this._clearUpdateInterval();
@@ -121,6 +220,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
             if (playGeneration === this._playGeneration) {
                 this._clearUpdateInterval();
                 Logger.warning('WebAudio', `Backing track playback failed: reason=${reason}`);
+                (this.playbackFailed as EventEmitterOfT<Error>).trigger(
+                    reason instanceof Error ? reason : new Error(String(reason))
+                );
             }
         });
         this._transportClock.start(this.audioElement.currentTime * 1000);
@@ -130,6 +232,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public playAfterCountIn(durationMilliseconds: number): void {
+        this._meterActive = true;
         this._clearCountInTimer();
         this._countInTimer = window.setTimeout(
             () => {
@@ -159,6 +262,11 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         this.cancelScheduledMetronomeClicks();
         const clickContext = this._clickContext;
         this._clickContext = null;
+        this._mediaSource?.disconnect();
+        this._mediaSource = null;
+        this._mixer?.disconnect();
+        this._mixer?.port.close();
+        this._mixer = null;
         this._clickMasterGain?.disconnect();
         this._clickMasterGain = null;
         this._clickBuffers.clear();
@@ -168,11 +276,16 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     }
 
     public pause(): void {
+        this._activationGeneration++;
+        this._meterActive = false;
+        this.outputLevel = null;
+        this._endObservedAt = null;
         this._playGeneration++;
         this._clearCountInTimer();
         this.audioElement.pause();
         this._transportClock.pause(this.audioElement.currentTime * 1000);
         this.cancelScheduledMetronomeClicks();
+        this._mixer?.port.postMessage({ cmd: 'alphaSynth.output.resetSamples' });
         this._clearUpdateInterval();
     }
 
@@ -194,12 +307,32 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         // nobody will call this
     }
     public resetSamples(): void {
+        this.outputLevel = null;
         this.cancelScheduledMetronomeClicks();
+        this._mixer?.port.postMessage({ cmd: 'alphaSynth.output.resetSamples' });
     }
     public activate(): void {
+        if (this._destroyed) {
+            return;
+        }
         const context = this._ensureClickContext();
-        if (context.state === 'suspended') {
-            void context.resume();
+        const generation = ++this._activationGeneration;
+        if (context.state === 'suspended' || (context.state as string) === 'interrupted') {
+            const failed = (error: unknown) => {
+                // A late rejection must not stop a newer playback attempt or revive disposed output.
+                if (this._destroyed || context !== this._clickContext || generation !== this._activationGeneration) {
+                    return;
+                }
+                this.pause();
+                (this.playbackFailed as EventEmitterOfT<Error>).trigger(
+                    error instanceof Error ? error : new Error(String(error))
+                );
+            };
+            try {
+                void context.resume().catch(failed);
+            } catch (error) {
+                failed(error);
+            }
         }
     }
 
@@ -252,7 +385,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
             this._clickContext = new AudioContext({ sampleRate: 44100 });
             this._clickMasterGain = this._clickContext.createGain();
             this._clickMasterGain.gain.setValueAtTime(this.masterVolume, this._clickContext.currentTime);
-            this._clickMasterGain.connect(this._clickContext.destination);
+            if (!this._usesMixer) {
+                this._clickMasterGain.connect(this._clickContext.destination);
+            }
             // Prepare both accents before taking a scheduling timestamp, so the
             // first regular beat cannot be delayed by waveform generation.
             for (const accent of [false, true]) {
@@ -269,6 +404,7 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     public readonly samplesPlayed: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
     public readonly timeUpdate: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
     public readonly sampleRequest: IEventEmitter = new EventEmitter();
+    public readonly playbackFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
 
     public async enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {
         return WebAudioHelper.enumerateOutputDevices();
@@ -284,6 +420,24 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private async _setOutputDevice(sinkId: string): Promise<void> {
         if (this._destroyed) {
             throw new Error('Backing-track output was destroyed');
+        }
+        if (this._usesMixer) {
+            const context = this._ensureClickContext() as AudioContext & {
+                setSinkId?: (sinkId: string) => Promise<void>;
+            };
+            // Media and clicks now share one destination, so there is no second
+            // media sink to change or roll back independently.
+            if (typeof context.setSinkId !== 'function') {
+                if (sinkId !== '' && sinkId !== 'default') {
+                    throw new Error('Browser cannot route backing output to the selected device');
+                }
+                return;
+            }
+            await context.setSinkId(sinkId);
+            if (this._destroyed) {
+                throw new Error('Backing-track output was destroyed');
+            }
+            return;
         }
         if (typeof this.audioElement.setSinkId !== 'function') {
             Logger.warning('WebAudio', 'Browser does not support changing the output device');
@@ -328,7 +482,9 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         }
 
         // https://developer.mozilla.org/en-US/docs/Web/API/AudioContext/sinkId
-        const sinkId = this.audioElement.sinkId;
+        const sinkId = this._usesMixer
+            ? (this._clickContext as (AudioContext & { sinkId?: string }) | null)?.sinkId
+            : this.audioElement.sinkId;
 
         if (typeof sinkId !== 'string' || sinkId === '' || sinkId === 'default') {
             return null;

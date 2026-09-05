@@ -1,8 +1,48 @@
 import { describe, expect, it } from 'vitest';
 import { compileLinearVelocityModulation, linearVelocityValue, compileVelocityAttenuation, defaultVelocityAttenuation, overrideModulators, resolveModulatorLayers, velocityAttenuationDb, type SoundFontModulator } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
+import { compileVelocityModulation, velocityModulationValue } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
 
 const rule = (amount: number, source = 0x0502, destination = 48, amountSource = 0): SoundFontModulator => ({
     modSrcOper: source, modDestOper: destination, modAmount: amount, modAmtSrcOper: amountSource, modTransOper: 0,
+});
+
+describe('nonlinear bank velocity modulation', () => {
+    const compile = (source: number) => compileVelocityModulation({ instrument: [rule(1, source, 8)], preset: [] }, 8)!;
+    it('preserves finite, monotonic and complementary curves over every MIDI velocity', () => {
+        const positiveConcave = compile(0x0402);
+        const negativeConcave = compile(0x0502);
+        const positiveConvex = compile(0x0802);
+        const negativeConvex = compile(0x0902);
+        let previousConcave = 0;
+        let previousConvex = 0;
+        for (let velocity = 0; velocity < 128; velocity++) {
+            const concave = velocityModulationValue(positiveConcave, velocity);
+            const convex = velocityModulationValue(positiveConvex, velocity);
+            expect(Number.isFinite(concave) && Number.isFinite(convex)).toBe(true);
+            expect(concave).toBeGreaterThanOrEqual(previousConcave);
+            expect(convex).toBeGreaterThanOrEqual(previousConvex);
+            expect(concave + velocityModulationValue(negativeConvex, velocity)).toBeCloseTo(1, 12);
+            expect(convex + velocityModulationValue(negativeConcave, velocity)).toBeCloseTo(1, 12);
+            previousConcave = concave;
+            previousConvex = convex;
+        }
+        // Unlike a linear approximation, the midpoint is strongly curved.
+        expect(velocityModulationValue(positiveConcave, 64)).toBeLessThan(0.2);
+        expect(velocityModulationValue(positiveConvex, 64)).toBeGreaterThan(0.8);
+        expect(previousConcave).toBeLessThan(1); // MIDI controller normalization is /128.
+        expect(velocityModulationValue(negativeConvex, 0)).toBe(1);
+    });
+    it('honors zero overrides, additive preset routes and absolute transforms', () => {
+        const route = compileVelocityModulation(resolveModulatorLayers([], [rule(1200, 0x0902, 8)],
+            [rule(0, 0x0902, 8)], [], [{ ...rule(-600, 0x0902, 8), modTransOper: 2 }, rule(128, 2, 8)]), 8)!;
+        expect(velocityModulationValue(route, 64)).toBeCloseTo(600 * velocityModulationValue(compile(0x0902), 64) + 64);
+        expect(compileVelocityModulation({ instrument: [rule(0, 0x0902, 8)], preset: [] }, 8)).toBeUndefined();
+    });
+    it('does not misinterpret MIDI CC, bipolar, amount-source or unknown transform routes', () => {
+        const instrument = [rule(1200, 0x0982, 8), rule(1200, 0x0b02, 8), rule(1200, 0x0902, 8, 2),
+            { ...rule(1200, 0x0902, 8), modTransOper: 99 }];
+        expect(compileVelocityModulation({ instrument, preset: [] }, 8)).toBeUndefined();
+    });
 });
 
 describe('linear velocity envelope modulation', () => {

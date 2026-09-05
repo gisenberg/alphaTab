@@ -4508,6 +4508,9 @@ export class AlphaTabApiBase<TSettings> {
         optionsWithChannels.useSyncPoints = options.useSyncPoints;
         optionsWithChannels.masterVolume = options.masterVolume;
         optionsWithChannels.metronomeVolume = options.metronomeVolume;
+        optionsWithChannels.enablePeakLimiter = options.enablePeakLimiter;
+        optionsWithChannels.enableExperimentalGuitarAmp = options.enableExperimentalGuitarAmp;
+        optionsWithChannels.releaseTailSeconds = options.releaseTailSeconds;
         optionsWithChannels.playbackRange = options.playbackRange;
 
         for (const [trackIndex, volume] of options.trackVolume) {

@@ -70,7 +70,7 @@ export class AlphaSynthMidiFileHandler implements IMidiFileHandler {
         }
     }
 
-    public addNote(track: number, start: number, length: number, key: number, velocity: number, channel: number, isPalmMute: boolean = false): void {
+    public addNote(track: number, start: number, length: number, key: number, velocity: number, channel: number, isPalmMute: boolean = false, isPercussionChoke: boolean = false): void {
         start += this.tickShift;
         this._midiFile.addEvent(
             new NoteOnEvent(
@@ -79,7 +79,8 @@ export class AlphaSynthMidiFileHandler implements IMidiFileHandler {
                 channel,
                 AlphaSynthMidiFileHandler._fixValue(key),
                 AlphaSynthMidiFileHandler._fixValue(velocity),
-                isPalmMute
+                isPalmMute,
+                isPercussionChoke
             )
         );
 
@@ -89,7 +90,8 @@ export class AlphaSynthMidiFileHandler implements IMidiFileHandler {
                 start + length,
                 channel,
                 AlphaSynthMidiFileHandler._fixValue(key),
-                AlphaSynthMidiFileHandler._fixValue(velocity)
+                AlphaSynthMidiFileHandler._fixValue(velocity),
+                isPercussionChoke
             )
         );
     }

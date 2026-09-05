@@ -1100,7 +1100,7 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
 
     public createBackingTrackPlayer(): IAlphaSynth | null {
         return new BackingTrackPlayer(
-            new AudioElementBackingTrackSynthOutput(),
+            new AudioElementBackingTrackSynthOutput(this._api.settings),
             this._api.settings.player.bufferTimeInMilliseconds
         );
     }

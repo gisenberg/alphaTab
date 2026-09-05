@@ -1,4 +1,4 @@
-import { TechniqueSymbolPlacement } from '@coderline/alphatab/model/InstrumentArticulation';
+import { type InstrumentArticulation, TechniqueSymbolPlacement } from '@coderline/alphatab/model/InstrumentArticulation';
 import { MusicFontSymbol } from '@coderline/alphatab/model/MusicFontSymbol';
 import { PercussionMapper } from '@coderline/alphatab/model/PercussionMapper';
 import type { PlaybackInformation } from '@coderline/alphatab/model/PlaybackInformation';
@@ -522,9 +522,9 @@ export class GpifSoundMapper {
         return GpifIconIds.SteelGuitar;
     }
 
-    public static buildInstrumentSet(track: Track): GpifInstrumentSet {
+    public static buildInstrumentSet(track: Track, percussionArticulations?: InstrumentArticulation[]): GpifInstrumentSet {
         if (track.percussionArticulations.length > 0 || track.isPercussion) {
-            return GpifSoundMapper._buildPercussionInstrumentSet(track);
+            return GpifSoundMapper._buildPercussionInstrumentSet(track, percussionArticulations);
         } else {
             return GpifSoundMapper._buildPitchedInstrumentSet(track);
         }
@@ -563,7 +563,7 @@ export class GpifSoundMapper {
         return instrumentSet;
     }
 
-    private static _buildPercussionInstrumentSet(track: Track): GpifInstrumentSet {
+    private static _buildPercussionInstrumentSet(track: Track, percussionArticulations?: InstrumentArticulation[]): GpifInstrumentSet {
         if (!GpifSoundMapper._elementByArticulation) {
             GpifSoundMapper._initLookups();
         }
@@ -573,10 +573,10 @@ export class GpifSoundMapper {
         instrumentSet.name = 'Drums';
         instrumentSet.type = 'drumKit';
 
-        const articulations =
+        const articulations = percussionArticulations ?? (
             track.percussionArticulations.length > 0
                 ? track.percussionArticulations
-                : Array.from(PercussionMapper.instrumentArticulations.values());
+                : Array.from(PercussionMapper.instrumentArticulations.values()));
 
         // NOTE: GP files are very sensitive in terms of articulation and element order.
         // notes reference articulations index based within the overall file.

@@ -1,5 +1,6 @@
 import type { IEventEmitter, IEventEmitterOfT } from '@coderline/alphatab/EventEmitter';
 import type { SynthOutputDiagnostics } from '@coderline/alphatab/synth/SynthOutputDiagnostics';
+import type { SynthOutputLevel } from '@coderline/alphatab/synth/OutputLevelMeter';
 
 /**
  * Represents a output device on which the synth can send the audio to.
@@ -28,6 +29,8 @@ export interface ISynthOutputDevice {
  * @public
  */
 export interface ISynthOutput {
+    /** Latest post-output sample peak/RMS window, or null before measurement and after pause. */
+    readonly outputLevel?: SynthOutputLevel | null;
     /**
      * Gets the sample rate required by the output.
      */

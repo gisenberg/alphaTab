@@ -22,7 +22,7 @@ import { Fingers } from '@coderline/alphatab/model/Fingers';
 import { GolpeType } from '@coderline/alphatab/model/GolpeType';
 import { GraceType } from '@coderline/alphatab/model/GraceType';
 import { HarmonicType } from '@coderline/alphatab/model/HarmonicType';
-import { TechniqueSymbolPlacement } from '@coderline/alphatab/model/InstrumentArticulation';
+import { type InstrumentArticulation, TechniqueSymbolPlacement } from '@coderline/alphatab/model/InstrumentArticulation';
 import type { KeySignature } from '@coderline/alphatab/model/KeySignature';
 import { KeySignatureType } from '@coderline/alphatab/model/KeySignatureType';
 import { Lyrics } from '@coderline/alphatab/model/Lyrics';
@@ -33,6 +33,7 @@ import type { Note } from '@coderline/alphatab/model/Note';
 import { NoteAccidentalMode } from '@coderline/alphatab/model/NoteAccidentalMode';
 import { NoteOrnament } from '@coderline/alphatab/model/NoteOrnament';
 import { Ottavia } from '@coderline/alphatab/model/Ottavia';
+import { PercussionMapper } from '@coderline/alphatab/model/PercussionMapper';
 import { PickStroke } from '@coderline/alphatab/model/PickStroke';
 import { Rasgueado } from '@coderline/alphatab/model/Rasgueado';
 import type { Score } from '@coderline/alphatab/model/Score';
@@ -62,11 +63,13 @@ export class GpifWriter {
     private static readonly _sampleRate = 44100;
 
     private _rhythmIdLookup: Map<string, string> = new Map<string, string>();
+    private _percussionArticulationIndices: Map<Note, number> = new Map<Note, number>();
 
     public writeXml(score: Score): string {
         const xmlDocument = new XmlDocument();
 
         this._rhythmIdLookup = new Map<string, string>();
+        this._percussionArticulationIndices.clear();
 
         this._writeDom(xmlDocument, score);
 
@@ -265,7 +268,8 @@ export class GpifWriter {
         }
 
         if (note.percussionArticulation >= 0) {
-            noteNode.addElement('InstrumentArticulation').innerText = note.percussionArticulation.toString();
+            noteNode.addElement('InstrumentArticulation').innerText =
+                (this._percussionArticulationIndices.get(note) ?? note.percussionArticulation).toString();
         } else {
             noteNode.addElement('InstrumentArticulation').innerText = '0';
         }
@@ -1533,7 +1537,39 @@ export class GpifWriter {
     }
 
     private _writeInstrumentSetNode(trackNode: XmlNode, track: Track) {
-        const instrumentSet = GpifSoundMapper.buildInstrumentSet(track);
+        // GPIF references table positions, while alphaTab also accepts direct articulation IDs.
+        // Keep existing positions and append referenced fallbacks without changing the score.
+        let articulations: InstrumentArticulation[] | undefined;
+        if (track.isPercussion || track.percussionArticulations.length > 0) {
+            articulations = track.percussionArticulations.length > 0
+                ? [...track.percussionArticulations]
+                : Array.from(PercussionMapper.instrumentArticulations.values());
+            const indices = new Map(articulations.map((articulation, index) => [articulation, index]));
+            for (const staff of track.staves) {
+                for (const bar of staff.bars) {
+                    for (const voice of bar.voices) {
+                        for (const beat of voice.beats) {
+                            for (const note of beat.notes) {
+                                const articulation = PercussionMapper.getArticulation(note);
+                                if (!articulation) {
+                                    continue;
+                                }
+                                let index = note.percussionArticulation;
+                                if (index >= track.percussionArticulations.length) {
+                                    index = indices.get(articulation) ?? articulations.length;
+                                    if (index === articulations.length) {
+                                        indices.set(articulation, index);
+                                        articulations.push(articulation);
+                                    }
+                                }
+                                this._percussionArticulationIndices.set(note, index);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const instrumentSet = GpifSoundMapper.buildInstrumentSet(track, articulations);
         const instrumentSetNode = trackNode.addElement('InstrumentSet');
 
         instrumentSetNode.addElement('Name').innerText = instrumentSet.name;

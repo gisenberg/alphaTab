@@ -44,9 +44,10 @@ export class MetronomeClick {
             samples[i] = attack * release * (body + overtone + tail + noise);
             energy += samples[i] * samples[i];
         }
-        // Keep beat energy close to the previous click, independent of sample rate.
-        // The accent is stronger without relying on an excessive volume jump.
-        const gain = Math.sqrt((accent ? 0.00013 : 0.0001) * sampleRate / energy);
+        // Preserve regular-beat energy independently of sample rate. The stronger
+        // downbeat follows the measured accent contrast of a lossless GP export;
+        // it changes neither regular-beat loudness nor the original strike model.
+        const gain = Math.sqrt((accent ? 0.000215 : 0.0001) * sampleRate / energy);
         for (let i = 0; i < length; i++) {
             samples[i] *= gain;
         }

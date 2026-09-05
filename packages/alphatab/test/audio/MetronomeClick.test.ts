@@ -51,6 +51,7 @@ describe('bank-independent metronome', () => {
             expect(regular[0]).toBe(0);
             expect(Math.abs(regular[regular.length - 1])).toBe(0);
             expect(regular.every(x => Number.isFinite(x) && Math.abs(x) < 1)).toBe(true);
+            expect(accent.every(x => Number.isFinite(x) && Math.abs(x) < 1)).toBe(true);
             expect(energy(accent)).toBeGreaterThan(energy(regular));
             const half = regular.length >> 1;
             expect(energy(regular.subarray(half))).toBeLessThan(energy(regular.subarray(0, half)));

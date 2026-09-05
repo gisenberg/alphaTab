@@ -950,6 +950,23 @@ export class MidiFileGenerator {
         return track.playbackInfo.primaryChannel;
     }
 
+    private static _isPercussionChoke(note: Note): boolean {
+        if (!note.isPercussion) {
+            return false;
+        }
+        switch (PercussionMapper.getArticulation(note)?.id) {
+            case 29: // Second ride
+            case 94: // Ride
+            case 95: // Splash
+            case 96: // China
+            case 97: // High crash
+            case 98: // Medium crash
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private _generateNote(
         note: Note,
         beatStart: number,
@@ -1047,7 +1064,7 @@ export class MidiFileGenerator {
         // for tied notes, and target notes of legato slides we do not pick the note
         // the previous one is extended
         if (!note.isTieDestination && (!note.slideOrigin || note.slideOrigin.slideOutType !== SlideOutType.Legato)) {
-            this._handler.addNote(track.index, noteStart, noteSoundDuration, noteKey, velocity, channel, note.isPalmMute);
+            this._handler.addNote(track.index, noteStart, noteSoundDuration, noteKey, velocity, channel, note.isPalmMute, MidiFileGenerator._isPercussionChoke(note));
         }
     }
 
@@ -1168,14 +1185,14 @@ export class MidiFileGenerator {
         let totalOrnamentDuration = 0;
         for (let i = 0; i < ornamentNoteKeys.length; i++) {
             const realDuration = ornamentNoteDurations[i] * ornamentDurationFactor;
-            this._handler.addNote(track.index, noteStart, realDuration, ornamentNoteKeys[i], velocity, channel, note.isPalmMute);
+            this._handler.addNote(track.index, noteStart, realDuration, ornamentNoteKeys[i], velocity, channel, note.isPalmMute, MidiFileGenerator._isPercussionChoke(note));
 
             noteStart += realDuration;
             totalOrnamentDuration += realDuration;
         }
 
         const remaining = noteDuration - totalOrnamentDuration;
-        this._handler.addNote(track.index, noteStart, remaining, noteKey, velocity, channel, note.isPalmMute);
+        this._handler.addNote(track.index, noteStart, remaining, noteKey, velocity, channel, note.isPalmMute, MidiFileGenerator._isPercussionChoke(note));
     }
 
     private _getNoteDuration(note: Note, beatPlayDuration: number, tempoOnBeatStart: number): MidiNoteDuration {
@@ -1975,7 +1992,7 @@ export class MidiFileGenerator {
                 note.isStringed && note.string <= brushInfo.length ? brushInfo[note.string - 1] : 0;
             const duration = rasgueadoInfo.durations[i] as number;
 
-            this._handler.addNote(track.index, tick + brushOffset, duration - brushOffset, noteKey, velocity, channel, note.isPalmMute);
+            this._handler.addNote(track.index, tick + brushOffset, duration - brushOffset, noteKey, velocity, channel, note.isPalmMute, MidiFileGenerator._isPercussionChoke(note));
 
             tick += duration;
         }
@@ -2003,7 +2020,7 @@ export class MidiFileGenerator {
             if (tick + trillLength >= end) {
                 trillLength = end - tick;
             }
-            this._handler.addNote(track.index, tick, trillLength, realKey ? noteKey : trillKey, dynamicValue, channel, note.isPalmMute);
+            this._handler.addNote(track.index, tick, trillLength, realKey ? noteKey : trillKey, dynamicValue, channel, note.isPalmMute, MidiFileGenerator._isPercussionChoke(note));
             realKey = !realKey;
             tick += trillLength;
         }

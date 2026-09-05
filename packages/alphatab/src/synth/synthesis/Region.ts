@@ -6,6 +6,7 @@ import type { HydraGenAmount } from '@coderline/alphatab/synth/soundfont/Hydra';
 import { Envelope } from '@coderline/alphatab/synth/synthesis/Envelope';
 import { LoopMode } from '@coderline/alphatab/synth/synthesis/LoopMode';
 import { TypeConversions } from '@coderline/alphatab/io/TypeConversions';
+import type { VelocityModulation } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
 
 /**
  * @internal
@@ -105,6 +106,8 @@ export class Region {
     public modEnv: Envelope = new Envelope();
     public initialFilterQ: number = 0;
     public initialFilterFc: number = 0;
+    public velocityToFilter: VelocityModulation | undefined;
+    public velocityToFilterEnvelopeDepth: VelocityModulation | undefined;
     public modEnvToPitch: number = 0;
     public modEnvToFilterFc: number = 0;
     public modLfoToFilterFc: number = 0;
@@ -142,6 +145,8 @@ export class Region {
             this.modEnv = new Envelope(other.modEnv);
             this.initialFilterQ = other.initialFilterQ;
             this.initialFilterFc = other.initialFilterFc;
+            this.velocityToFilter = other.velocityToFilter ? { ...other.velocityToFilter } : undefined;
+            this.velocityToFilterEnvelopeDepth = other.velocityToFilterEnvelopeDepth ? { ...other.velocityToFilterEnvelopeDepth } : undefined;
             this.modEnvToPitch = other.modEnvToPitch;
             this.modEnvToFilterFc = other.modEnvToFilterFc;
             this.modLfoToFilterFc = other.modLfoToFilterFc;
@@ -180,6 +185,8 @@ export class Region {
         this.modEnv.clear();
         this.initialFilterQ = 0;
         this.initialFilterFc = 0;
+        this.velocityToFilter = undefined;
+        this.velocityToFilterEnvelopeDepth = undefined;
         this.modEnvToPitch = 0;
         this.modEnvToFilterFc = 0;
         this.modLfoToFilterFc = 0;
@@ -340,7 +347,9 @@ export class Region {
                 this.loopStart += TypeConversions.int16ToUint32(amount.shortAmount) * 32768;
                 break;
             case GenOperators.InitialAttenuation:
-                this.attenuation = amount.shortAmount * 0.1;
+                // EMU-compatible SF2 banks scale static attenuation by 0.4 before
+                // converting centibels to dB. Modulator amounts are not scaled.
+                this.attenuation = amount.shortAmount * 0.04;
                 break;
             case GenOperators.EndloopAddrsCoarseOffset:
                 this.loopEnd += TypeConversions.int16ToUint32(amount.shortAmount) * 32768;

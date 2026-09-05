@@ -3,6 +3,27 @@ import { Envelope } from '@coderline/alphatab/synth/synthesis/Envelope';
 import { VoiceEnvelope, VoiceEnvelopeSegment } from '@coderline/alphatab/synth/synthesis/VoiceEnvelope';
 
 describe('SoundFont voice envelope', () => {
+    it.each([8000, 22050, 44100, 48000, 96000])('skips a sub-sample velocity-scaled modulation attack at %s Hz', sampleRate => {
+        // Regression: the unscaled duration was positive, but velocity scaling
+        // rounded it to zero and created an infinite attack slope.
+        const parameters = new Envelope();
+        parameters.attack = 4 / sampleRate;
+        parameters.hold = 0.1;
+        parameters.sustain = 0.5;
+        const modulation = new VoiceEnvelope();
+        modulation.setup(parameters, 60, 127, false, sampleRate);
+        expect(Number.isFinite(modulation.slope)).toBe(true);
+        expect(modulation.segment).toBe(VoiceEnvelopeSegment.Hold);
+        expect(modulation.level).toBe(1);
+        modulation.process(1, sampleRate);
+        expect(Number.isFinite(modulation.level)).toBe(true);
+        const amplitude = new VoiceEnvelope();
+        amplitude.setup(parameters, 60, 127, true, sampleRate);
+        expect(amplitude.segment).toBe(VoiceEnvelopeSegment.Attack);
+        expect(amplitude.samplesUntilNextSegment).toBeGreaterThan(0);
+        expect(parameters.attack).toBe(4 / sampleRate);
+    });
+
     it('keeps palm-muted notes present until the sequencer note-off, then damps the release', () => {
         // Regression: the sequencer already shortens palm-muted notes. A second
         // decay erased their body before note-off and buried them in the mix.

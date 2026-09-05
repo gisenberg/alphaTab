@@ -591,6 +591,12 @@ export class MidiFileSequencer {
         const mainState = this._mainState;
         const syncPoints = mainState.syncPoints;
 
+        // Imported sync points can end a few milliseconds beyond the decoded
+        // media duration. The actual media endpoint must still reach the final tick.
+        if (Number.isFinite(backingTrackLength) && backingTrackLength > 0 && timePosition >= backingTrackLength) {
+            return mainState.endTime / this.playbackSpeed;
+        }
+
         if (timePosition < 0 || syncPoints.length === 0) {
             return timePosition;
         }
@@ -620,6 +626,10 @@ export class MidiFileSequencer {
     public mainTimePositionToBackingTrack(timePosition: number, backingTrackLength: number): number {
         const mainState = this._mainState;
         const syncPoints = mainState.syncPoints;
+        if (Number.isFinite(backingTrackLength) && backingTrackLength > 0 && mainState.endTime > 0 &&
+            timePosition * this.playbackSpeed >= mainState.endTime) {
+            return backingTrackLength;
+        }
         if (timePosition < 0 || syncPoints.length === 0) {
             return timePosition;
         }

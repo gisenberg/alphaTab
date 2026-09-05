@@ -13,6 +13,7 @@ import { IOHelper } from '@coderline/alphatab/io/IOHelper';
 import { TechniqueSymbolPlacement } from '@coderline/alphatab/model/InstrumentArticulation';
 import { JsonConverter } from '@coderline/alphatab/model/JsonConverter';
 import { MusicFontSymbol } from '@coderline/alphatab/model/MusicFontSymbol';
+import { PercussionMapper } from '@coderline/alphatab/model/PercussionMapper';
 import type { Score } from '@coderline/alphatab/model/Score';
 import { Settings } from '@coderline/alphatab/Settings';
 import { XmlDocument } from '@coderline/alphatab/xml/XmlDocument';
@@ -56,6 +57,17 @@ describe('Gp7ExporterTest', () => {
         const fileName = name.substr(name.lastIndexOf('/') + 1);
         const exported = exportGp7(expected);
         const actual = prepareImporterWithBytes(exported).readScore();
+
+        if (ignoreKeys?.includes('percussionarticulation')) {
+            const sounds = (score: Score) => score.tracks.flatMap(track => track.staves.flatMap(staff =>
+                staff.bars.flatMap(bar => bar.voices.flatMap(voice => voice.beats.flatMap(beat =>
+                    beat.notes.map(note => {
+                        const articulation = PercussionMapper.getArticulation(note);
+                        return articulation ? [articulation.id, articulation.outputMidiNumber] : null;
+                    }))))));
+            // GPIF table positions may change, but the resolved percussion sound must not.
+            expect(sounds(actual)).toEqual(sounds(expected));
+        }
 
         const expectedJson = JsonConverter.scoreToJsObject(expected);
         const actualJson = JsonConverter.scoreToJsObject(actual);
@@ -119,6 +131,7 @@ describe('Gp7ExporterTest', () => {
         await testRoundTripEqual('conversion/full-song.gp5', [
             'accidentalmode', // gets upgraded from default
             'percussionarticulations', // gets added
+            'percussionarticulation', // direct IDs become table positions; resolved sounds are checked above
             'automations' // volume automations are not yet supported in gpif
         ]);
     });
@@ -207,6 +220,40 @@ describe('Gp7ExporterTest', () => {
         expect(actual.tracks[0].staves[0].bars[0].voices[0].beats[1].notes[0].percussionArticulation).toBe(1);
         expect(actual.tracks[0].staves[0].bars[0].voices[0].beats[2].notes[0].percussionArticulation).toBe(0);
         expect(actual.tracks[0].staves[0].bars[0].voices[0].beats[3].notes[0].percussionArticulation).toBe(1);
+    });
+
+    it.each(['direct', 'indexed', 'mixed'])('preserves percussion sounds with %s articulation references', mode => {
+        const articulations = Array.from(PercussionMapper.instrumentArticulationIds())
+            .map(id => PercussionMapper.getArticulationById(id)!);
+        const score = ScoreLoader.loadAlphaTex(articulations.map(() => '0.1').join(' '));
+        const track = score.tracks[0];
+        track.staves[0].isPercussion = true;
+        track.playbackInfo.primaryChannel = 9;
+        track.playbackInfo.secondaryChannel = 9;
+        if (mode === 'indexed') {
+            track.percussionArticulations.push(...articulations);
+        } else if (mode === 'mixed') {
+            track.percussionArticulations.push(articulations[0]);
+        }
+        const notes = track.staves[0].bars.flatMap(bar => bar.voices.flatMap(voice => voice.beats.flatMap(beat => beat.notes)));
+        notes.forEach((note, index) => {
+            note.percussionArticulation = mode === 'indexed' || (mode === 'mixed' && index === 0)
+                ? index : articulations[index].id;
+        });
+        const originalReferences = notes.map(note => note.percussionArticulation);
+        const originalTable = [...track.percussionArticulations];
+        const restored = prepareImporterWithBytes(exportGp7(score)).readScore();
+        const restoredNotes = restored.tracks[0].staves[0].bars.flatMap(bar =>
+            bar.voices.flatMap(voice => voice.beats.flatMap(beat => beat.notes)));
+        expect(restoredNotes.every(note => note.percussionArticulation >= 0 &&
+            note.percussionArticulation < restored.tracks[0].percussionArticulations.length)).toBe(true);
+        // Regression: writing a direct ID as a GPIF table index changed crash 57 to tambourine 54.
+        expect(restoredNotes.map(note => {
+            const articulation = PercussionMapper.getArticulation(note)!;
+            return [articulation.id, articulation.outputMidiNumber];
+        })).toEqual(articulations.map(articulation => [articulation.id, articulation.outputMidiNumber]));
+        expect(notes.map(note => note.percussionArticulation)).toEqual(originalReferences);
+        expect(track.percussionArticulations).toEqual(originalTable);
     });
 
     it('gp7-lyrics-null', async () => {

@@ -1,4 +1,6 @@
 import { Logger } from '@coderline/alphatab/Logger';
+import { OutputLevelMeter } from '@coderline/alphatab/synth/OutputLevelMeter';
+import { StereoPeakOutputProcessor } from '@coderline/alphatab/platform/javascript/StereoPeakOutputProcessor';
 import {
     calculateWebAudioBufferCount,
     calculateWebAudioRequestBufferCount,
@@ -71,8 +73,41 @@ export class AlphaSynthWebWorklet {
         }
         AlphaSynthWebWorklet._isRegistered = true;
         registerProcessor(
+            'alphatab-mixer',
+            class AlphaTabMixerProcessor extends AudioWorkletProcessor {
+                private readonly _meter = new OutputLevelMeter(sampleRate);
+                private readonly _processor = new StereoPeakOutputProcessor(sampleRate);
+                private readonly _empty: Float32Array[] = [];
+
+                public constructor() {
+                    super();
+                    this.port.addEventListener('message', event => {
+                        if (event.data.cmd === 'alphaSynth.output.resetSamples') {
+                            this._processor.reset();
+                            this._meter.reset();
+                        }
+                    });
+                    this.port.start();
+                }
+
+                public override process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+                    // Keep processing disconnected input to drain the lookahead tail.
+                    // No per-quantum messages, allocations or renderer callbacks.
+                    this._processor.process(inputs[0] ?? this._empty, outputs[0] ?? this._empty);
+                    if (outputs[0]?.[0] && outputs[0]?.[1]) {
+                        const level = this._meter.push(outputs[0][0], outputs[0][1]);
+                        if (level) {
+                            this.port.postMessage({ cmd: 'alphaSynth.output.level', level });
+                        }
+                    }
+                    return true;
+                }
+            }
+        );
+        registerProcessor(
             'alphatab',
             class AlphaSynthWebWorkletProcessor extends AudioWorkletProcessor {
+                private readonly _meter = new OutputLevelMeter(sampleRate);
                 public static readonly BufferSize: number = 4096;
 
                 private _outputBuffer: Float32Array = new Float32Array(0);
@@ -155,6 +190,7 @@ export class AlphaSynthWebWorklet {
                             break;
                         }
                         case 'alphaSynth.output.resetSamples':
+                            this._meter.reset();
                             if (!this._sharedSampleBuffer) {
                                 this._circularBuffer.clear();
                             }
@@ -175,6 +211,7 @@ export class AlphaSynthWebWorklet {
                             this._postDiagnostics();
                             break;
                         case 'alphaSynth.output.stop':
+                            this._meter.reset();
                             this._flushSamplesPlayed();
                             this._isStopped = true;
                             this._directWorkerPort?.close();
@@ -212,6 +249,11 @@ export class AlphaSynthWebWorklet {
                         ? this._sharedSampleBuffer.read(buffer, 0, interleavedSamplesToRead)
                         : this._circularBuffer.read(buffer, 0, interleavedSamplesToRead);
                     const playedFrames = writeInterleavedStereoSamples(buffer, samplesFromBuffer, left, right);
+                    const level = this._meter.push(left, right);
+                    if (level) {
+                        // Send only the small level snapshot directly to the main-side output.
+                        this.port.postMessage({ cmd: 'alphaSynth.output.level', level });
+                    }
 
                     if (this._hasReceivedSamples) {
                         const finalTail = this._finalBufferReceived && playedFrames < left.length;
@@ -245,6 +287,7 @@ export class AlphaSynthWebWorklet {
 
                     const generation = shared.generation;
                     if (generation !== this._sharedGeneration) {
+                        this._meter.reset();
                         this._sharedGeneration = generation;
                         this._samplesPlayedReporter.reset();
                         this._hasReceivedSamples = false;

@@ -30,7 +30,7 @@ export interface IMidiFileHandler {
      * @param velocity The velocity which should be applied to the note (derived from the note dynamics).
      * @param channel The midi channel on which the note should be played.
      */
-    addNote(track: number, start: number, length: number, key: number, velocity: number, channel: number, isPalmMute?: boolean): void;
+    addNote(track: number, start: number, length: number, key: number, velocity: number, channel: number, isPalmMute?: boolean, isPercussionChoke?: boolean): void;
 
     /**
      * Adds a control change to the generated midi file.

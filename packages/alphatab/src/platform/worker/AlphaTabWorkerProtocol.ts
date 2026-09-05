@@ -9,6 +9,7 @@ import type { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
 import type { PlayerState } from '@coderline/alphatab/synth/PlayerState';
 import type { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
 import type { SynthOutputDiagnostics } from '@coderline/alphatab/synth/SynthOutputDiagnostics';
+import type { SynthOutputLevel } from '@coderline/alphatab/synth/OutputLevelMeter';
 import type { SharedSampleBufferDescriptor } from '@coderline/alphatab/platform/javascript/SharedSampleBuffer';
 import type { CompactBoundsLookup } from '@coderline/alphatab/rendering/utils/BoundsLookup';
 
@@ -160,6 +161,7 @@ export type IAlphaSynthWorkerMessage =
     | { cmd: 'alphaSynth.exporter.rendered'; exporterId: number; chunk: AudioExportChunk | undefined }
     | { cmd: 'alphaSynth.exporter.error'; exporterId: number; error: Error }
     /* output -> worker */
+    | { cmd: 'alphaSynth.output.level'; level: SynthOutputLevel }
     | { cmd: 'alphaSynth.output.sampleRequest' }
     | {
           cmd: 'alphaSynth.output.samplesPlayed';

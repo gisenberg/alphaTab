@@ -226,6 +226,12 @@ export class BackingTrackPlayer extends AlphaSynthBase {
             timePosition,
             this._backingTrackOutput.backingTrackDuration
         );
+        // Preserve external-media seeks while paused, without scheduling clicks
+        // or emitting a second finish for queued timeupdate/seeked events.
+        if (this.state !== PlayerState.Playing) {
+            this.updateTimePosition(alphaTabTimePosition, false);
+            return;
+        }
 
         // The media only starts once the count-in elapsed, so its first time update is the moment
         // the main score takes the transport back. The sample-driven path performs the same

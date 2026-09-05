@@ -105,3 +105,71 @@ export function compileLinearVelocityModulation(
 export function linearVelocityValue(route: LinearVelocityModulation, velocity: number): number {
     return route.offset + route.slope * Math.max(0, Math.min(127, velocity | 0)) / 128;
 }
+
+/** Bank-authored unipolar velocity curves, compiled to scalar amounts per region. @internal */
+export interface VelocityModulation extends LinearVelocityModulation {
+    concavePositive?: number;
+    concaveNegative?: number;
+    convexPositive?: number;
+    convexNegative?: number;
+}
+
+// SF2 controller curves use the 96 dB logarithmic law with explicit endpoints.
+// Compatibility reference: FluidSynth 2.4.6 fluid_mod.c and fluid_conv.c
+// (unipolar /128 mapping and interpolated SF2 curve endpoints).
+// Interpolate the 128-point curve at the controller's /128 position once here,
+// so note-on needs only shared lookups, not logs or a per-region 128-value table.
+const concavePositive = new Float64Array(128);
+const concaveNegative = new Float64Array(128);
+const convexPositive = new Float64Array(128);
+const convexNegative = new Float64Array(128);
+function concavePoint(index: number): number {
+    return index === 127 ? 1 : -Math.log10((127 - index) / 127) * 40 / 96;
+}
+function concaveAt(position: number): number {
+    const lower = Math.floor(position);
+    if (lower === 127) { return 1; }
+    const fraction = position - lower;
+    return concavePoint(lower) * (1 - fraction) + concavePoint(lower + 1) * fraction;
+}
+for (let velocity = 0; velocity < 128; velocity++) {
+    const position = velocity * 127 / 128;
+    concavePositive[velocity] = concaveAt(position);
+    concaveNegative[velocity] = concaveAt(127 - position);
+    convexPositive[velocity] = 1 - concaveNegative[velocity];
+    convexNegative[velocity] = 1 - concavePositive[velocity];
+}
+
+/** Preserve rule precedence and reject unsupported controllers rather than approximating them. @internal */
+export function compileVelocityModulation(
+    layers: ReturnType<typeof resolveModulatorLayers>, destination: number
+): VelocityModulation | undefined {
+    const route: VelocityModulation = compileLinearVelocityModulation(layers, destination) ?? { offset: 0, slope: 0 };
+    for (const rules of [layers.instrument, layers.preset]) {
+        for (const rule of rules) {
+            if (rule.modDestOper !== destination || rule.modAmtSrcOper !== 0 ||
+                (rule.modTransOper !== 0 && rule.modTransOper !== 2)) { continue; }
+            let field: 'concavePositive' | 'concaveNegative' | 'convexPositive' | 'convexNegative';
+            switch (rule.modSrcOper) {
+                case 0x0402: field = 'concavePositive'; break;
+                case 0x0502: field = 'concaveNegative'; break;
+                case 0x0802: field = 'convexPositive'; break;
+                case 0x0902: field = 'convexNegative'; break;
+                default: continue;
+            }
+            const amount = rule.modTransOper === 2 ? Math.abs(rule.modAmount) : rule.modAmount;
+            route[field] = (route[field] ?? 0) + amount;
+        }
+    }
+    return Object.values(route).some(amount => amount !== 0) ? route : undefined;
+}
+
+/** Evaluate a compiled route once per note; never used in the sample loop. @internal */
+export function velocityModulationValue(route: VelocityModulation, velocity: number): number {
+    const index = Math.max(0, Math.min(127, velocity | 0));
+    return route.offset + route.slope * index / 128 +
+        (route.concavePositive ?? 0) * concavePositive[index] +
+        (route.concaveNegative ?? 0) * concaveNegative[index] +
+        (route.convexPositive ?? 0) * convexPositive[index] +
+        (route.convexNegative ?? 0) * convexNegative[index];
+}

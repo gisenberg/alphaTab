@@ -10,6 +10,8 @@ import { BackingTrackPlayer, type IBackingTrackSynthOutput } from '@coderline/al
 import type { ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
 import type { MidiEventsPlayedEventArgs } from '@coderline/alphatab/synth/MidiEventsPlayedEventArgs';
 import { PlayerState } from '@coderline/alphatab/synth/PlayerState';
+import { TestPlatform } from 'test/TestPlatform';
+import { Settings } from '@coderline/alphatab/Settings';
 
 interface ScheduledClick {
     time: number;
@@ -109,6 +111,46 @@ function createPlayer(output: RecordingBackingTrackOutput): BackingTrackPlayer {
 }
 
 describe('BackingTrackPlayer', () => {
+    it.each([0.5, 1, 1.5])('finishes the synchronized backing fixture once at its media endpoint at speed %s', async speed => {
+        const score = ScoreLoader.loadScoreFromBytes(await TestPlatform.loadFile('test-data/audio/syncpoints-testfile.gp'), new Settings());
+        const midi = new MidiFile();
+        const generator = new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi));
+        generator.generate();
+        const output = new RecordingBackingTrackOutput();
+        output.backingTrackDuration = 42000;
+        const player = new BackingTrackPlayer(output, 500);
+        player.loadMidiFile(midi);
+        player.updateSyncPoints(generator.syncPoints);
+        player.playbackSpeed = speed;
+        player.timePosition = 48000 / speed;
+        expect(output.seekTimes[output.seekTimes.length - 1]).toBe(output.backingTrackDuration);
+        player.timePosition = 0;
+        let finished = 0;
+        player.finished.on(() => finished++);
+        player.play();
+        for (let time = 0; time <= output.backingTrackDuration; time += 50) {
+            output.reportTime(time);
+        }
+        // Regression: rounded imported sync points left this fixture five ticks short.
+        expect(finished).toBe(1);
+        expect(player.state).toBe(PlayerState.Paused);
+        output.reportTime(output.backingTrackDuration);
+        expect(finished).toBe(1);
+    });
+
+    it('updates paused media seeks without scheduling fresh metronome clicks', () => {
+        const output = new RecordingBackingTrackOutput();
+        const player = createPlayer(output);
+        player.metronomeVolume = 1;
+        player.play();
+        output.reportTime(0);
+        player.pause();
+        const clickCount = output.metronomeClicks.length;
+        output.reportTime(8000);
+        expect(player.timePosition).toBe(8000);
+        expect(output.metronomeClicks).toHaveLength(clickCount);
+        expect(player.state).toBe(PlayerState.Paused);
+    });
     it('plays the count-in ahead of the media and hands the transport back on the first media update', () => {
         const output = new RecordingBackingTrackOutput();
         const player = createPlayer(output);

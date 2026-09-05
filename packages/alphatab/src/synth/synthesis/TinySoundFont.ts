@@ -26,7 +26,7 @@ import {
     type HydraShdr
 } from '@coderline/alphatab/synth/soundfont/Hydra';
 import { Channel } from '@coderline/alphatab/synth/synthesis/Channel';
-import { compileLinearVelocityModulation, compileVelocityAttenuation, defaultVelocityAttenuation, resolveModulatorLayers, velocityAttenuationDb, type SoundFontModulator } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
+import { compileLinearVelocityModulation, compileVelocityModulation, velocityModulationValue, compileVelocityAttenuation, defaultVelocityAttenuation, resolveModulatorLayers, velocityAttenuationDb, type SoundFontModulator } from '@coderline/alphatab/synth/soundfont/SoundFontModulators';
 import { MetronomeClick } from '@coderline/alphatab/synth/MetronomeClick';
 import { Channels } from '@coderline/alphatab/synth/synthesis/Channels';
 import { LoopMode } from '@coderline/alphatab/synth/synthesis/LoopMode';
@@ -369,11 +369,11 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                 break;
             case MidiEventType.NoteOn:
                 const noteOn = e as NoteOnEvent;
-                this.channelNoteOn(noteOn.channel, noteOn.noteKey, noteOn.noteVelocity / 127.0, noteOn.isPalmMute);
+                this.channelNoteOn(noteOn.channel, noteOn.noteKey, noteOn.noteVelocity / 127.0, noteOn.isPalmMute, noteOn.isPercussionChoke);
                 break;
             case MidiEventType.NoteOff:
                 const noteOff = e as NoteOffEvent;
-                this.channelNoteOff(noteOff.channel, noteOff.noteKey);
+                this.channelNoteOff(noteOff.channel, noteOff.noteKey, !!noteOff.isPercussionChoke);
                 break;
             case MidiEventType.ControlChange:
                 const controlChange = e as ControlChangeEvent;
@@ -535,7 +535,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param key note value between 0 and 127 (60 being middle C)
      * @param vel velocity as a float between 0.0 (equal to note off) and 1.0 (full)
      */
-    public noteOn(presetIndex: number, key: number, vel: number, isPalmMute: boolean = false): void {
+    public noteOn(presetIndex: number, key: number, vel: number, isPalmMute: boolean = false, isPercussionChoke: boolean = false): void {
         if (!this.presets) {
             return;
         }
@@ -613,6 +613,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             voice.playingPreset = presetIndex;
             voice.audioBus = audioBus;
             voice.playingKey = key;
+            voice.isPercussionChoke = isPercussionChoke;
             voice.playIndex = voicePlayIndex;
             voice.noteGainDb = this.globalGainDb - Math.max(0, Math.min(144,
                 region.attenuation + velocityAttenuationDb(region.velocityAttenuation, midiVelocity)));
@@ -646,6 +647,14 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             voice.lowPass.z1 = 0;
             voice.lowPass.z2 = 0;
             voice.initialFilterFc = region.initialFilterFc;
+            voice.modEnvToFilterFc = region.modEnvToFilterFc;
+            if (region.velocityToFilterEnvelopeDepth) {
+                voice.modEnvToFilterFc += velocityModulationValue(region.velocityToFilterEnvelopeDepth, midiVelocity);
+            }
+            if (region.velocityToFilter) {
+                // Bank-authored cutoff changes belong to this note, not the shared region.
+                voice.initialFilterFc += velocityModulationValue(region.velocityToFilter, midiVelocity);
+            }
             if (palmMute) {
                 // Damping belongs to this voice, never its shared SoundFont region
                 // or MIDI channel. Open notes in the same chord retain their tone.
@@ -836,7 +845,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param key note value between 0 and 127 (60 being middle C)
      * @param vel velocity as a float between 0.0 (equal to note off) and 1.0 (full)
      */
-    public channelNoteOn(channel: number, key: number, vel: number, isPalmMute: boolean = false): void {
+    public channelNoteOn(channel: number, key: number, vel: number, isPalmMute: boolean = false, isPercussionChoke: boolean = false): void {
         if (!this._channels || channel > this._channels.channelList.length) {
             return;
         }
@@ -850,7 +859,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
         }
 
         this._channels.activeChannel = channel;
-        this.noteOn(this._channels.channelList[channel].presetIndex, key, vel, isPalmMute);
+        this.noteOn(this._channels.channelList[channel].presetIndex, key, vel, isPalmMute, isPercussionChoke);
     }
 
     /**
@@ -858,7 +867,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * @param channel channel number
      * @param key note value between 0 and 127 (60 being middle C)
      */
-    public channelNoteOff(channel: number, key: number): void {
+    public channelNoteOff(channel: number, key: number, isPercussionChoke?: boolean): void {
         if (this._transpositionPitches.has(channel)) {
             key += this._transpositionPitches.get(channel)!;
         }
@@ -875,6 +884,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                 v.playingPreset === -1 ||
                 v.playingChannel !== channel ||
                 v.playingKey !== key ||
+                (isPercussionChoke !== undefined && v.isPercussionChoke !== isPercussionChoke) ||
                 v.ampEnv.segment >= VoiceEnvelopeSegment.Release
             ) {
                 continue;
@@ -911,7 +921,12 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                 continue;
             }
 
-            v.end(this.outSampleRate);
+            if (v.isPercussionChoke) {
+                // Preserve the original attack and gate; choke only this note's layers at note-off.
+                v.endQuick(this.outSampleRate);
+            } else {
+                v.end(this.outSampleRate);
+            }
         }
     }
 
@@ -1475,6 +1490,8 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
                                     zoneRegion.velocityAttenuation = compileVelocityAttenuation(modulatorLayers);
                                     zoneRegion.ampEnv.velocityToDecay = compileLinearVelocityModulation(modulatorLayers, 36);
                                     zoneRegion.ampEnv.velocityToRelease = compileLinearVelocityModulation(modulatorLayers, 38);
+                                    zoneRegion.velocityToFilter = compileVelocityModulation(modulatorLayers, 8);
+                                    zoneRegion.velocityToFilterEnvelopeDepth = compileVelocityModulation(modulatorLayers, 11);
                                     // preset region key and vel ranges are a filter for the zone regions
                                     if (
                                         zoneRegion.hiKey < presetRegion.loKey ||

@@ -315,10 +315,15 @@ export abstract class NoteEvent extends MidiEvent {
 export class NoteOnEvent extends NoteEvent {
     /** Per-note synthesis hint; standard MIDI export retains the note's timed gate. */
     public isPalmMute: boolean;
+    /** Per-note cymbal choke hint. Not encoded in standard MIDI 1.0 note bytes. */
+    public isPercussionChoke?: boolean;
 
-    public constructor(track: number, tick: number, channel: number, noteKey: number, noteVelocity: number, isPalmMute: boolean = false) {
+    public constructor(track: number, tick: number, channel: number, noteKey: number, noteVelocity: number, isPalmMute: boolean = false, isPercussionChoke: boolean = false) {
         super(track, tick, MidiEventType.NoteOn, channel, noteKey, noteVelocity);
         this.isPalmMute = isPalmMute;
+        if (isPercussionChoke) {
+            this.isPercussionChoke = true;
+        }
     }
 
     public override writeTo(s: IWriteable): void {
@@ -334,8 +339,14 @@ export class NoteOnEvent extends NoteEvent {
  * @public
  */
 export class NoteOffEvent extends NoteEvent {
-    public constructor(track: number, tick: number, channel: number, noteKey: number, noteVelocity: number) {
+    /** Matches the note-on hint so ordinary and choked hits of the same key stay distinct. */
+    public isPercussionChoke?: boolean;
+
+    public constructor(track: number, tick: number, channel: number, noteKey: number, noteVelocity: number, isPercussionChoke: boolean = false) {
         super(track, tick, MidiEventType.NoteOff, channel, noteKey, noteVelocity);
+        if (isPercussionChoke) {
+            this.isPercussionChoke = true;
+        }
     }
 
     public override writeTo(s: IWriteable): void {

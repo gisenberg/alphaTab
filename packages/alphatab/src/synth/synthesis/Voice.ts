@@ -29,6 +29,8 @@ export class Voice {
     public playingPreset: number = 0;
     public playingKey: number = 0;
     public playingChannel: number = 0;
+    /** Note-local articulation, reset whenever this pooled voice is reused. */
+    public isPercussionChoke: boolean = false;
     /** Capture routing at note onset so program changes do not reroute ringing notes. */
     public audioBus: TrackAudioBus | undefined;
 
@@ -54,6 +56,8 @@ export class Voice {
 
     public lowPass: VoiceLowPass = new VoiceLowPass();
     public initialFilterFc: number = 13500;
+    /** Note-local filter-envelope depth, including bank-authored velocity modulation. */
+    public modEnvToFilterFc: number = 0;
     public modLfo: VoiceLfo = new VoiceLfo();
     public vibLfo: VoiceLfo = new VoiceLfo();
 
@@ -142,7 +146,7 @@ export class Voice {
         let outR: number = f.outputMode === OutputMode.StereoUnweaved ? numSamples : -1;
 
         // Cache some values, to give them at least some chance of ending up in registers.
-        const updateModEnv: boolean = (!separatePitch && region.modEnvToPitch !== 0) || region.modEnvToFilterFc !== 0;
+        const updateModEnv: boolean = (!separatePitch && region.modEnvToPitch !== 0) || this.modEnvToFilterFc !== 0;
         const updateModLFO: boolean =
             this.modLfo.delta !== 0 &&
             ((!separatePitch && region.modLfoToPitch !== 0) || region.modLfoToFilterFc !== 0 || region.modLfoToVolume !== 0);
@@ -156,7 +160,7 @@ export class Voice {
 
         const tmpLowpass = this.lowPass;
 
-        const dynamicLowpass: boolean = region.modLfoToFilterFc !== 0 || region.modEnvToFilterFc !== 0;
+        const dynamicLowpass: boolean = region.modLfoToFilterFc !== 0 || this.modEnvToFilterFc !== 0;
         let tmpSampleRate: number = 0;
         let tmpInitialFilterFc: number = 0;
         let tmpModLfoToFilterFc: number = 0;
@@ -177,7 +181,7 @@ export class Voice {
             tmpSampleRate = f.outSampleRate;
             tmpInitialFilterFc = this.initialFilterFc;
             tmpModLfoToFilterFc = region.modLfoToFilterFc;
-            tmpModEnvToFilterFc = region.modEnvToFilterFc;
+            tmpModEnvToFilterFc = this.modEnvToFilterFc;
         } else {
             tmpSampleRate = 0;
             tmpInitialFilterFc = 0;

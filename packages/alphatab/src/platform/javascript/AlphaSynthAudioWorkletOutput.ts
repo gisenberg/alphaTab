@@ -165,6 +165,11 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         const data = e.data;
         const cmd = data.cmd;
         switch (cmd) {
+            case 'alphaSynth.output.level':
+                if (this._worklet) {
+                    this.outputLevel = data.level;
+                }
+                break;
             case 'alphaSynth.output.samplesPlayed':
                 if (data.diagnostics) {
                     this.setPlaybackBufferDiagnostics(data.diagnostics);
@@ -218,6 +223,7 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
     }
 
     public resetSamples(): void {
+        this.outputLevel = null;
         const sharedSampleBuffer = this._sharedSampleBuffer;
         if (sharedSampleBuffer) {
             const generation = sharedSampleBuffer.generation;
