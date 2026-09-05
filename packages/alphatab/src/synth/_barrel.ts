@@ -1,4 +1,4 @@
-export { AlphaSynthBase, AlphaSynth, type IAlphaSynthAudioExporter } from '@coderline/alphatab/synth/AlphaSynth';
+export { AlphaSynthBase, AlphaSynth, AlphaSynthAudioExporter, type IAlphaSynthAudioExporter } from '@coderline/alphatab/synth/AlphaSynth';
 export { CircularSampleBuffer } from '@coderline/alphatab/synth/ds/CircularSampleBuffer';
 export { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
 export type { ISynthOutput, ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';

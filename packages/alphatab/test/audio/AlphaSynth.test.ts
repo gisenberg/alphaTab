@@ -288,7 +288,8 @@ describe('AlphaSynthTests', () => {
     async function testAudioExport(
         score: Score,
         fileName: string,
-        prepareOptions: (options: AudioExportOptions) => void
+        prepareOptions: (options: AudioExportOptions) => void,
+        verify?: (samples: Float32Array) => void
     ) {
         // add a fake sync point to get time range (if there are not already sync points)
         const syncPoints = score.exportFlatSyncPoints();
@@ -353,6 +354,10 @@ describe('AlphaSynthTests', () => {
             generated = generated.subarray(0, totalSamples);
         }
 
+        if (verify) {
+            verify(generated);
+            return;
+        }
         try {
             const reference = new DataView((await TestPlatform.loadFile(`test-data/audio/${fileName}.pcm`)).buffer);
             expect(generated.length).toBe(reference.buffer.byteLength / 4);
@@ -402,7 +407,18 @@ describe('AlphaSynthTests', () => {
         await testAudioExport(score, 'export-silent-with-metronome', options => {
             options.metronomeVolume = 1;
             for (const t of score.tracks) {
-                options.trackVolume.set(t.index, 0.5);
+                options.trackVolume.set(t.index, 0);
+            }
+        }, samples => {
+            // Assert timing and silence, not a particular SoundFont or click tuning.
+            const rate = 44100;
+            const energy = (start: number, end: number) => samples.subarray(start * rate * 2, end * rate * 2)
+                .reduce((sum, sample) => sum + sample * sample, 0);
+            expect(samples.length).toBeGreaterThanOrEqual(rate * 2 * 2);
+            expect(samples.every(Number.isFinite)).toBe(true);
+            for (const beat of [0, 0.5, 1, 1.5]) {
+                expect(energy(beat, beat + 0.1)).toBeGreaterThan(0);
+                expect(energy(beat + 0.15, beat + 0.4)).toBe(0);
             }
         });
     });

@@ -3,6 +3,7 @@
 // TypeScript port for alphaTab: (C) 2020 by Daniel Kuschny
 // Licensed under: MPL-2.0
 import {
+    type AlphaTabMetronomeEvent,
     type ControlChangeEvent,
     type MidiEvent,
     MidiEventType,
@@ -25,6 +26,7 @@ import {
     type HydraShdr
 } from '@coderline/alphatab/synth/soundfont/Hydra';
 import { Channel } from '@coderline/alphatab/synth/synthesis/Channel';
+import { MetronomeClick } from '@coderline/alphatab/synth/MetronomeClick';
 import { Channels } from '@coderline/alphatab/synth/synthesis/Channels';
 import { LoopMode } from '@coderline/alphatab/synth/synthesis/LoopMode';
 import { OutputMode } from '@coderline/alphatab/synth/synthesis/OutputMode';
@@ -64,6 +66,11 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
     public timeSignatureNumerator: number = 0;
     public timeSignatureDenominator: number = 0;
     private _metronomeChannel: number = SynthConstants.DefaultChannelCount - 1;
+    private _clickSamples: Float32Array | null = null;
+    private _clickPosition: number = 0;
+    private _clickSampleRate: number = 0;
+    private _accentClick: Float32Array = new Float32Array(0);
+    private _regularClick: Float32Array = new Float32Array(0);
 
     public constructor(sampleRate: number) {
         this.outSampleRate = sampleRate;
@@ -189,8 +196,14 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
         while (!this._midiEventQueue.isEmpty) {
             const m: SynthEvent = this._midiEventQueue.dequeue()!;
             if (m.isMetronome && this.metronomeVolume > 0) {
-                this.channelNoteOff(this._metronomeChannel, SynthConstants.MetronomeKey);
-                this.channelNoteOn(this._metronomeChannel, SynthConstants.MetronomeKey, 95 / 127);
+                if (this._clickSampleRate !== this.outSampleRate) {
+                    this._clickSampleRate = this.outSampleRate;
+                    this._accentClick = MetronomeClick.createSamples(this.outSampleRate, true);
+                    this._regularClick = MetronomeClick.createSamples(this.outSampleRate, false);
+                }
+                this._clickSamples = (m.event as AlphaTabMetronomeEvent).metronomeNumerator === 0
+                    ? this._accentClick : this._regularClick;
+                this._clickPosition = 0;
             } else if (m.event) {
                 this.processMidiMessage(m.event);
             }
@@ -215,6 +228,27 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
             }
         }
 
+        if (!buffer) {
+            this._clickSamples = null;
+        } else if (this._clickSamples) {
+            const gain = this.metronomeVolume * this.masterVolume;
+            for (let i = 0; i < sampleCount && this._clickPosition < this._clickSamples.length; i++) {
+                const sample = this._clickSamples[this._clickPosition++] * gain;
+                switch (this.outputMode) {
+                    case OutputMode.StereoInterleaved:
+                        buffer[bufferPos + i * 2] += sample;
+                        buffer[bufferPos + i * 2 + 1] += sample;
+                        break;
+                    case OutputMode.StereoUnweaved:
+                        buffer[bufferPos + i] += sample;
+                        buffer[bufferPos + sampleCount + i] += sample;
+                        break;
+                    case OutputMode.Mono:
+                        buffer[bufferPos + i] += sample;
+                        break;
+                }
+            }
+        }
         return processedEvents;
     }
 
@@ -303,6 +337,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * defined settings
      */
     public resetSoft(): void {
+        this._clickSamples = null;
         for (const v of this._voices) {
             if (
                 v.playingPreset !== -1 &&
@@ -359,6 +394,7 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * Stop all playing notes immediatly and reset all channel parameters
      */
     public reset(): void {
+        this._clickSamples = null;
         for (const v of this._voices) {
             if (
                 v.playingPreset !== -1 &&
@@ -562,6 +598,9 @@ export class TinySoundFont implements IAudioSampleSynthesizer {
      * Stop playing all notes (end with sustain and release)
      */
     public noteOffAll(immediate: boolean): void {
+        if (immediate) {
+            this._clickSamples = null;
+        }
         for (const voice of this._voices) {
             if (voice.playingPreset !== -1) {
                 if (immediate) {

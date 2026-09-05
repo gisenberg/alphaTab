@@ -10,6 +10,7 @@ import { WebAudioHelper } from '@coderline/alphatab/platform/javascript/AlphaSyn
 import type { IBackingTrackSynthOutput } from '@coderline/alphatab/synth/BackingTrackPlayer';
 import type { ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
 import { TransportClock } from '@coderline/alphatab/synth/TransportClock';
+import { MetronomeClick } from '@coderline/alphatab/synth/MetronomeClick';
 
 /**
  * A {@link IBackingTrackSynthOutput} which uses a HTMLAudioElement as playback mechanism.
@@ -39,7 +40,8 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _objectUrl: string | null = null;
     private _playGeneration: number = 0;
     private _clickContext: AudioContext | null = null;
-    private _scheduledClicks: Set<OscillatorNode> = new Set<OscillatorNode>();
+    private _scheduledClicks: Set<AudioBufferSourceNode> = new Set<AudioBufferSourceNode>();
+    private _clickBuffers: Map<boolean, AudioBuffer> = new Map<boolean, AudioBuffer>();
     private _countInTimer: number = 0;
     /** Anchors click scheduling to the media position between coarse time updates. */
     private readonly _transportClock: TransportClock = new TransportClock();
@@ -205,15 +207,17 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
     private _scheduleClick(delaySeconds: number, accent: boolean, volume: number): void {
         const context = this._ensureClickContext();
         const startAt = context.currentTime + delaySeconds;
-        const stopAt = startAt + (accent ? 0.045 : 0.032);
-        const oscillator = context.createOscillator();
+        let buffer = this._clickBuffers.get(accent);
+        if (!buffer) {
+            const samples = MetronomeClick.createSamples(context.sampleRate, accent);
+            buffer = context.createBuffer(1, samples.length, context.sampleRate);
+            buffer.getChannelData(0).set(samples);
+            this._clickBuffers.set(accent, buffer);
+        }
+        const oscillator = context.createBufferSource();
+        oscillator.buffer = buffer;
         const gain = context.createGain();
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(accent ? 1760 : 1175, startAt);
-        const peak = Math.min(1, Math.max(0, volume * this.masterVolume)) * (accent ? 0.3 : 0.22);
-        gain.gain.setValueAtTime(0.0001, startAt);
-        gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak), startAt + 0.002);
-        gain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
+        gain.gain.setValueAtTime(Math.max(0, volume * this.masterVolume), startAt);
         oscillator.connect(gain);
         gain.connect(context.destination);
         oscillator.addEventListener('ended', () => {
@@ -223,7 +227,6 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         });
         this._scheduledClicks.add(oscillator);
         oscillator.start(startAt);
-        oscillator.stop(stopAt);
     }
 
     public cancelScheduledMetronomeClicks(): void {
