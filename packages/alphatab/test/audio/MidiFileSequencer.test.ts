@@ -100,6 +100,46 @@ function createMidi(): MidiFile {
 }
 
 describe('MidiFileSequencerTests', () => {
+    it.each([
+        { tick: 0, numerator: 2, denominator: 4, bpm: 120 },
+        { tick: 1919, numerator: 2, denominator: 4, bpm: 120 },
+        { tick: 1920, numerator: 4, denominator: 4, bpm: 90 },
+        { tick: 2880, numerator: 4, denominator: 4, bpm: 90 },
+        { tick: 5760, numerator: 6, denominator: 8, bpm: 150 }
+    ])('counts in with the meter and tempo at tick $tick', ({ tick, numerator, denominator, bpm }) => {
+        const midi = new MidiFile();
+        const handler = new AlphaSynthMidiFileHandler(midi);
+        handler.addTempo(0, 120);
+        handler.addTimeSignature(0, 2, 4);
+        handler.addTempo(1920, 90);
+        handler.addTimeSignature(1920, 4, 4);
+        handler.addNote(0, 1920, 960, 60, 100, 0);
+        handler.addTempo(5760, 150);
+        handler.addTimeSignature(5760, 6, 8);
+        handler.addNote(0, 5760, 2880, 62, 100, 0);
+        const synthesizer = new RecordingSynthesizer();
+        const sequencer = new MidiFileSequencer(synthesizer);
+        sequencer.loadMidi(midi);
+        sequencer.playbackSpeed = 0.75;
+        // Visit a later position first to cover both forward and backward seeks.
+        sequencer.mainSeek(sequencer.mainTickPositionToTimePosition(6720));
+        sequencer.mainSeek(sequencer.mainTickPositionToTimePosition(tick));
+        synthesizer.takeNoteOnCount();
+        synthesizer.takeMetronomeCount();
+        sequencer.startCountIn();
+        expect(sequencer.currentTempo).toBe(bpm);
+        expect(sequencer.currentEndTick).toBe(numerator * 960 * 4 / denominator);
+        expect(sequencer.currentEndTime).toBeCloseTo(numerator * 60000 / bpm * 4 / denominator / 0.75);
+        sequencer.fillMidiEventQueueToEndTime(sequencer.currentEndTime);
+        expect(synthesizer.takeMetronomeCount()).toBe(numerator);
+        expect(synthesizer.takeNoteOnCount()).toBe(0);
+        sequencer.resetCountIn();
+        if (tick === 1920 || tick === 5760) {
+            sequencer.fillMidiEventQueueToEndTime(sequencer.currentTime + 10);
+            expect(synthesizer.takeNoteOnCount()).toBe(1);
+        }
+    });
+
     it('defers a main seek requested while the count-in owns the synthesizer', () => {
         // Regression: seeking during the count-in (a score click, a loop range or a tempo change)
         // used to move the main state's time forward while leaving its event index behind. When

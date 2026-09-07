@@ -37,8 +37,7 @@ class MidiSequencerState {
     public tempoChangeIndex: number = 0;
     public syncPoints: BackingTrackSyncPoint[] = [];
     public firstProgramEventPerChannel: Map<number, SynthEvent> = new Map();
-    public firstTimeSignatureNumerator: number = 0;
-    public firstTimeSignatureDenominator: number = 0;
+    public timeSignatureChanges: SynthEvent[] = [];
     public synthData: SynthEvent[] = [];
     public division: number = MidiUtils.QuarterTime;
     public eventIndex: number = 0;
@@ -316,10 +315,7 @@ export class MidiFileSequencer {
                 metronomeCount = meta.numerator;
                 metronomeLengthInTicks = (state.division * (4.0 / timeSignatureDenominator)) | 0;
                 metronomeLengthInMillis = metronomeLengthInTicks * (60000.0 / (bpm * midiFile.division));
-                if (state.firstTimeSignatureDenominator === 0) {
-                    state.firstTimeSignatureNumerator = meta.numerator;
-                    state.firstTimeSignatureDenominator = timeSignatureDenominator;
-                }
+                state.timeSignatureChanges.push(synthData);
             } else if (mEvent.type === MidiEventType.ProgramChange) {
                 const programChange = mEvent as ProgramChangeEvent;
                 const channel: number = programChange.channel;
@@ -746,14 +742,23 @@ export class MidiFileSequencer {
         let bpm: number = 120;
         let timeSignatureNumerator = 4;
         let timeSignatureDenominator = 4;
-        if (this._mainState.eventIndex === 0) {
-            bpm = this._mainState.tempoChanges[0].bpm;
-            timeSignatureNumerator = this._mainState.firstTimeSignatureNumerator;
-            timeSignatureDenominator = this._mainState.firstTimeSignatureDenominator;
-        } else {
-            bpm = this._synthesizer.currentTempo;
-            timeSignatureNumerator = this._synthesizer.timeSignatureNumerator;
-            timeSignatureDenominator = this._synthesizer.timeSignatureDenominator;
+        // A seek dispatches only events before its target. Resolve metadata from the
+        // timeline inclusively so changes on the selected beat apply to the count-in,
+        // without dispatching that beat's notes or advancing the main event index.
+        const startTime = this._pendingMainSeekTime ?? this._mainState.currentTime;
+        for (const change of this._mainState.tempoChanges) {
+            if (change.time > startTime) {
+                break;
+            }
+            bpm = change.bpm;
+        }
+        for (const change of this._mainState.timeSignatureChanges) {
+            if (change.time > startTime) {
+                break;
+            }
+            const signature = change.event as TimeSignatureEvent;
+            timeSignatureNumerator = signature.numerator;
+            timeSignatureDenominator = Math.pow(2, signature.denominatorIndex);
         }
 
         state.tempoChanges.push(new MidiFileSequencerTempoChange(bpm, 0, 0));
