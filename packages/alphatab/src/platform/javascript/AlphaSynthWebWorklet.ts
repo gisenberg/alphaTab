@@ -126,9 +126,11 @@ export class AlphaSynthWebWorklet {
                     WebAudioSamplesPlayedReportIntervalFrames
                 );
                 private _directWorkerPort: MessagePort | null = null;
+                private readonly _playbackGeneration: number | undefined;
 
                 public constructor(options: AudioWorkletNodeOptions) {
                     super(options);
+                    this._playbackGeneration = options.processorOptions.playbackGeneration;
 
                     Logger.debug('WebAudio', 'creating processor');
 
@@ -233,6 +235,12 @@ export class AlphaSynthWebWorklet {
                     const right = outputs[0][1];
                     if (!left || !right) {
                         return true;
+                    }
+
+                    if (this._isStopped) {
+                        left.fill(0);
+                        right.fill(0);
+                        return false;
                     }
 
                     const sampleCount = left.length + right.length;
@@ -350,7 +358,7 @@ export class AlphaSynthWebWorklet {
                 }
 
                 private _postToSynth(message: IAlphaSynthWorkerMessage): void {
-                    (this._directWorkerPort ?? this.port).postMessage(message);
+                    (this._directWorkerPort ?? this.port).postMessage({ ...message, playbackGeneration: this._playbackGeneration });
                 }
 
                 private _recordBufferDepth(): void {

@@ -76,7 +76,7 @@ export type IAlphaSynthWorkerMessage =
           releaseTailSeconds?: number;
           sharedSampleBuffer?: SharedSampleBufferDescriptor;
       }
-    | { cmd: 'alphaSynth.output.attachWorkletPort'; port: MessagePort }
+    | { cmd: 'alphaSynth.output.attachWorkletPort'; port: MessagePort; playbackGeneration?: number }
     | { cmd: 'alphaSynth.setLogLevel'; value: LogLevel }
     | { cmd: 'alphaSynth.setMasterVolume'; value: number }
     | { cmd: 'alphaSynth.setMetronomeVolume'; value: number }
@@ -162,10 +162,11 @@ export type IAlphaSynthWorkerMessage =
     | { cmd: 'alphaSynth.exporter.error'; exporterId: number; error: Error }
     /* output -> worker */
     | { cmd: 'alphaSynth.output.level'; level: SynthOutputLevel }
-    | { cmd: 'alphaSynth.output.sampleRequest' }
+    | { cmd: 'alphaSynth.output.sampleRequest'; playbackGeneration?: number }
     | {
           cmd: 'alphaSynth.output.samplesPlayed';
           samples: number;
+          playbackGeneration?: number;
           diagnostics?: SynthOutputDiagnostics;
       }
     | {
@@ -175,8 +176,8 @@ export type IAlphaSynthWorkerMessage =
 
     /* worker -> output */
     | { cmd: 'alphaSynth.output.attachWorkerPort'; port: MessagePort }
-    | { cmd: 'alphaSynth.output.addSamples'; samples: Float32Array; isFinal?: boolean }
-    | { cmd: 'alphaSynth.output.play' }
+    | { cmd: 'alphaSynth.output.addSamples'; samples: Float32Array; isFinal?: boolean; playbackGeneration?: number }
+    | { cmd: 'alphaSynth.output.play'; playbackGeneration?: number; sharedSampleBuffer?: SharedSampleBufferDescriptor }
     | { cmd: 'alphaSynth.output.pause' }
     | { cmd: 'alphaSynth.output.stop' }
     | { cmd: 'alphaSynth.output.destroy' }

@@ -67,7 +67,7 @@ export class AlphaSynthWebWorker {
 
                 break;
             case 'alphaSynth.output.attachWorkletPort':
-                this._output.attachDirectPort(data.port);
+                this._output.attachDirectPort(data.port, data.playbackGeneration);
                 break;
             case 'alphaSynth.setLogLevel':
                 Logger.logLevel = data.value;

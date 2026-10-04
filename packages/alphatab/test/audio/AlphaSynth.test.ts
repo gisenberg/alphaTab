@@ -84,6 +84,67 @@ describe('AlphaSynthTests', () => {
         }
     });
 
+    it('restarts interrupted count-ins and reaches a selected loop after rapid play/pause', async () => {
+        const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 4 4 :4 C4 D4 E4 F4 | G4 A4 B4 C5');
+        const midi = new MidiFile();
+        new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi)).generate();
+        const output = new BufferedTestOutput(false);
+        const synth = new AlphaSynth(output, 500, true);
+        synth.loadSoundFont(await TestPlatform.loadFile('test-data/audio/default.sf2'), false);
+        synth.loadMidiFile(midi);
+        const range = new PlaybackRange();
+        range.startTick = synth.loadedMidiInfo!.endTick / 2;
+        range.endTick = synth.loadedMidiInfo!.endTick;
+        synth.playbackRange = range;
+        synth.countInVolume = 1;
+        synth.isLooping = true;
+        for (let attempt = 0; attempt < 10; attempt++) {
+            expect(synth.play()).toBe(true);
+            for (let request = 0; request < 4; request++) { output.next(); }
+            output.consumeNext();
+            synth.pause();
+        }
+        let loops = 0;
+        synth.finished.on(() => { loops++; });
+        expect(synth.play()).toBe(true);
+        for (let request = 0; request < 1000 && loops < 2; request++) {
+            output.next();
+            while (output.consumeNext()) { /* Drain the audible output. */ }
+        }
+        expect(loops).toBe(2);
+        expect(synth.currentPosition.currentTick).toBeGreaterThanOrEqual(range.startTick);
+        expect(synth.currentPosition.currentTick).toBeLessThanOrEqual(range.endTick);
+        synth.pause();
+    });
+
+    it('returns to the selected song position when pausing a count-in and disabling it', async () => {
+        const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 4 4 :4 C4 D4 E4 F4 | G4 A4 B4 C5');
+        const midi = new MidiFile();
+        new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi)).generate();
+        const output = new BufferedTestOutput(false);
+        const synth = new AlphaSynth(output, 500);
+        synth.loadSoundFont(await TestPlatform.loadFile('test-data/audio/default.sf2'), false);
+        synth.loadMidiFile(midi);
+        const startTick = synth.loadedMidiInfo!.endTick / 2;
+        synth.tickPosition = startTick;
+        const startTime = synth.timePosition;
+        synth.countInVolume = 1;
+        synth.play();
+        for (let request = 0; request < 30; request++) { output.next(); }
+        output.consumeNext();
+        synth.pause();
+        expect(synth.timePosition).toBe(startTime);
+        synth.countInVolume = 0;
+        let finished = false;
+        synth.finished.on(() => { finished = true; });
+        synth.play();
+        for (let request = 0; request < 1000 && !finished; request++) {
+            output.next();
+            while (output.consumeNext()) { /* Drain the audible output. */ }
+        }
+        expect(finished).toBe(true);
+    });
+
     it('resumes from the last audible frame after buffered audio is discarded on pause', async () => {
         const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 1 4 :8 C4 * 2');
         const midi = new MidiFile();
@@ -532,15 +593,17 @@ describe('AlphaSynthTests', () => {
             finished = true;
         });
 
-        const start = Date.now();
-
-        while (!finished) {
-            const now = Date.now();
-            if (now - start > 2000) {
-                throw new Error(`play did not complete after ${2000}ms`);
-            }
+        // Completion is a sample-budget invariant, not a CPU speed benchmark.
+        // Allow the score plus one second of short release-tail microbuffers.
+        const duration = synth.loadedMidiInfo!.endTime;
+        expect(Number.isFinite(duration)).toBe(true);
+        const scoreRequests = Math.ceil(duration / 1000 * testOutput.sampleRate /
+            (SynthConstants.MicroBufferSize * SynthConstants.MicroBufferCount));
+        const releaseRequests = Math.ceil(testOutput.sampleRate / SynthConstants.MicroBufferSize);
+        for (let request = 0; request < scoreRequests + releaseRequests && !finished; request++) {
             testOutput.next();
         }
+        expect(finished).toBe(true);
     }
 
     it('small-tempos', async () => {

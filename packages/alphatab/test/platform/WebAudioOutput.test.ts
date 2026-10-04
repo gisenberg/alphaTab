@@ -7,10 +7,29 @@ import {
     WebAudioHelper
 } from '@coderline/alphatab/platform/javascript/AlphaSynthWebAudioOutputBase';
 import { BrowserUiFacade } from '@coderline/alphatab/platform/javascript/BrowserUiFacade';
+import { SharedSampleBuffer } from '@coderline/alphatab/platform/javascript/SharedSampleBuffer';
 
 const originalWorkletFactory = BrowserUiFacade.createAlphaSynthAudioWorklet;
 
 describe('WebAudioOutput', () => {
+    it('does not clear worker-refilled shared audio when queued reset notifications arrive together', () => {
+        const output = new AlphaSynthAudioWorkletOutput(new Settings());
+        const shared = SharedSampleBuffer.create(4096);
+        Reflect.set(output, '_sharedSampleBuffer', shared);
+        output.setDirectWorkerPortHandler(() => {});
+        // Both resets have already executed in the producer before the renderer
+        // receives either notification. New samples belong to the second reset.
+        shared.resetSamples();
+        shared.resetSamples();
+        shared.write(new Float32Array([0.25, -0.25]));
+        output.resetSamples();
+        output.resetSamples();
+        expect(shared.countSamples).toBe(2);
+        const audible = new Float32Array(2);
+        shared.read(audible, 0, audible.length);
+        expect(Array.from(audible)).toEqual([0.25, -0.25]);
+    });
+
     it.each(['suspended', 'interrupted'])('completes successful synth resume from %s', async state => {
         const output = new AlphaSynthAudioWorkletOutput(new Settings());
         const context = { state, resume: vi.fn().mockResolvedValue(undefined) };

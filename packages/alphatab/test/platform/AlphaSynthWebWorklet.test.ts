@@ -194,5 +194,15 @@ describe('AlphaSynthWebWorklet', () => {
         expect(levels).toHaveLength(1);
         expect(levels[0].level.peak).toBe(initialPeak);
         expect(levels[0].level.rms).toBeCloseTo(Math.sqrt(initialPower / ((2 + 38 * 128) * 2)), 12);
+
+        // A stopped processor must not drain audio after it has been disconnected.
+        shared.write(new Float32Array([0.5, -0.5]));
+        port.dispatch({ cmd: 'alphaSynth.output.stop' });
+        silentOutput[0][0].fill(1);
+        silentOutput[0][1].fill(1);
+        expect(processor.process([], silentOutput, {})).toBe(false);
+        expect(shared.countSamples).toBe(2);
+        expect(silentOutput[0][0].every(sample => sample === 0)).toBe(true);
+        expect(silentOutput[0][1].every(sample => sample === 0)).toBe(true);
     });
 });

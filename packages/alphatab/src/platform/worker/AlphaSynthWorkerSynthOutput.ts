@@ -27,6 +27,8 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
     private _main: IAlphaTabWorkerGlobalScope<IAlphaSynthWorkerMessage>;
     private _sharedSampleBuffer: SharedSampleBuffer | null;
     private _directPort: MessagePort | null = null;
+    private _playbackGeneration = 0;
+    private _isPlaying = false;
     private readonly _boundHandleMessage: (e: MessageEvent<IAlphaSynthWorkerMessage>) => void;
 
     public get sampleRate(): number {
@@ -49,6 +51,9 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
     }
 
     public destroy(): void {
+        this._isPlaying = false;
+        this._playbackGeneration++;
+        this._main.removeEventListener('message', this._boundHandleMessage);
         this._directPort?.close();
         this._directPort = null;
         this._main.postMessage({
@@ -56,20 +61,33 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
         });
     }
 
-    public attachDirectPort(port: MessagePort): void {
+    public attachDirectPort(port: MessagePort, playbackGeneration: number = this._playbackGeneration): void {
+        if (playbackGeneration !== this._playbackGeneration || !this._isPlaying) {
+            port.close();
+            return;
+        }
         this._directPort?.close();
         this._directPort = port;
-        port.addEventListener('message', this._boundHandleMessage);
+        port.addEventListener('message', event => {
+            if (this._directPort === port) {
+                this._handleMessage(event);
+            }
+        });
         port.start();
     }
 
     private _handleMessage(e: MessageEvent<IAlphaSynthWorkerMessage>): void {
         const data = e.data;
+        if ('playbackGeneration' in data && data.playbackGeneration !== undefined && data.playbackGeneration !== this._playbackGeneration) {
+            return;
+        }
         switch (data.cmd) {
             case 'alphaSynth.output.sampleRequest':
+                if (!this._isPlaying) { return; }
                 (this.sampleRequest as EventEmitter).trigger();
                 break;
             case 'alphaSynth.output.samplesPlayed':
+                if (!this._isPlaying) { return; }
                 (this.samplesPlayed as EventEmitterOfT<number>).trigger(data.samples);
                 break;
         }
@@ -87,17 +105,33 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
         this._postRealtimeMessage({
             cmd: 'alphaSynth.output.addSamples',
             samples: Environment.prepareForPostMessage(samples),
-            isFinal
+            isFinal,
+            playbackGeneration: this._playbackGeneration
         });
     }
 
     public play(): void {
+        this._playbackGeneration++;
+        this._isPlaying = true;
+        this._directPort?.close();
+        this._directPort = null;
+        // A disconnected processor can still be running on the audio thread.
+        // Give this attempt a different ring so it cannot consume the new audio.
+        if (this._sharedSampleBuffer) {
+            this._sharedSampleBuffer = SharedSampleBuffer.create(this._sharedSampleBuffer.capacitySamples);
+        }
         this._main.postMessage({
-            cmd: 'alphaSynth.output.play'
+            cmd: 'alphaSynth.output.play',
+            playbackGeneration: this._playbackGeneration,
+            sharedSampleBuffer: this._sharedSampleBuffer?.descriptor
         });
     }
 
     public pause(): void {
+        this._playbackGeneration++;
+        this._isPlaying = false;
+        this._directPort?.close();
+        this._directPort = null;
         this._main.postMessage({
             cmd: 'alphaSynth.output.pause'
         });

@@ -40,9 +40,9 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
     private readonly _settings: Settings;
     private _boundHandleMessage: (e: MessageEvent<IAlphaSynthWorkerMessage>) => void;
     private _playGeneration: number = 0;
+    private _playbackGeneration: number | undefined;
     private _sharedSampleBuffer: SharedSampleBuffer | null = null;
-    private _lastResetGeneration: number = 0;
-    private _directWorkerPortHandler?: (port: MessagePort) => void;
+    private _directWorkerPortHandler?: (port: MessagePort, playbackGeneration?: number) => void;
 
     private _pendingEvents?: IAlphaSynthWorkerMessage[];
 
@@ -65,7 +65,6 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         this._sharedSampleBuffer = this._createSharedSampleBuffer(
             AlphaSynthWebAudioOutputBase.BufferSize * bufferCount
         );
-        this._lastResetGeneration = this._sharedSampleBuffer?.generation ?? 0;
         this.configurePlaybackDiagnostics(
             'audio-worklet',
             (AlphaSynthWebAudioOutputBase.BufferSize * bufferCount) / SynthConstants.AudioChannels
@@ -77,8 +76,13 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         return this._sharedSampleBuffer?.descriptor ?? null;
     }
 
-    public setDirectWorkerPortHandler(handler: (port: MessagePort) => void): void {
+    public setDirectWorkerPortHandler(handler: (port: MessagePort, playbackGeneration?: number) => void): void {
         this._directWorkerPortHandler = handler;
+    }
+
+    public configurePlaybackTransport(generation: number | undefined, buffer: SharedSampleBufferDescriptor | undefined): void {
+        this._playbackGeneration = generation;
+        this._sharedSampleBuffer = buffer ? SharedSampleBuffer.fromDescriptor(buffer) : null;
     }
 
     private _createSharedSampleBuffer(capacitySamples: number): SharedSampleBuffer | null {
@@ -98,6 +102,9 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         super.play();
         const ctx = this.context!;
         const playGeneration = ++this._playGeneration;
+        if (this._sharedSampleBuffer && !this._directWorkerPortHandler) {
+            this._sharedSampleBuffer = SharedSampleBuffer.create(this._sharedSampleBuffer.capacitySamples);
+        }
 
         // clear any pending events buffered from previous playback rounds
         // we just want the events which come in after the play call until the worklet is created
@@ -122,10 +129,16 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
                 outputChannelCount: [2],
                 processorOptions: {
                     bufferTimeInMilliseconds: this._bufferTimeInMilliseconds,
-                    sharedSampleBuffer: this.sharedSampleBuffer ?? undefined
+                    sharedSampleBuffer: this.sharedSampleBuffer ?? undefined,
+                    playbackGeneration: this._playbackGeneration
                 }
             }) as AudioWorkletNode<IAlphaSynthWorkerMessage>;
 
+            this._boundHandleMessage = event => {
+                if (playGeneration === this._playGeneration) {
+                    this._handleMessage(event);
+                }
+            };
             worklet.port.addEventListener('message', this._boundHandleMessage);
             worklet.port.start();
             if (this._directWorkerPortHandler) {
@@ -133,7 +146,7 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
                 worklet.port.postMessage({ cmd: 'alphaSynth.output.attachWorkerPort', port: directChannel.port1 }, [
                     directChannel.port1
                 ]);
-                this._directWorkerPortHandler(directChannel.port2);
+                this._directWorkerPortHandler(directChannel.port2, this._playbackGeneration);
             }
             this._worklet = worklet;
             this.source.connect(worklet);
@@ -225,12 +238,10 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
     public resetSamples(): void {
         this.outputLevel = null;
         const sharedSampleBuffer = this._sharedSampleBuffer;
-        if (sharedSampleBuffer) {
-            const generation = sharedSampleBuffer.generation;
-            if (generation === this._lastResetGeneration) {
-                sharedSampleBuffer.resetSamples();
-            }
-            this._lastResetGeneration = sharedSampleBuffer.generation;
+        // The worker owns resets when it produces shared audio. Repeating a reset
+        // here after another thread has already refilled the ring loses audible frames.
+        if (sharedSampleBuffer && !this._directWorkerPortHandler) {
+            sharedSampleBuffer.resetSamples();
         }
         this._postWorkerMessage({
             cmd: 'alphaSynth.output.resetSamples'

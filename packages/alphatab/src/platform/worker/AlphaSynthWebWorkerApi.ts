@@ -70,6 +70,7 @@ interface PendingSoundFontBankOperation {
 export class AlphaSynthWebWorkerApi implements IAlphaSynth {
     private _synth!: IAlphaSynthWorker;
     private _output: ISynthOutput;
+    private _outputPlaybackGeneration: number | undefined;
     private _workerIsReadyForPlayback: boolean = false;
     private _workerIsReady: boolean = false;
     private _outputIsReady: boolean = false;
@@ -288,10 +289,10 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
         this._playbackRange = null;
         this._output = player;
         const directOutput = this._output as ISynthOutput & {
-            setDirectWorkerPortHandler?: (handler: (port: MessagePort) => void) => void;
+            setDirectWorkerPortHandler?: (handler: (port: MessagePort, playbackGeneration?: number) => void) => void;
         };
-        directOutput.setDirectWorkerPortHandler?.(port => {
-            this._synth.postMessage({ cmd: 'alphaSynth.output.attachWorkletPort', port }, [port]);
+        directOutput.setDirectWorkerPortHandler?.((port, playbackGeneration) => {
+            this._synth.postMessage({ cmd: 'alphaSynth.output.attachWorkletPort', port, playbackGeneration }, [port]);
         });
         this._output.ready.on(this._onOutputReady.bind(this));
         this._output.samplesPlayed.on(this.onOutputSamplesPlayed.bind(this));
@@ -612,11 +613,18 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
                 (this.midiLoadFailed as EventEmitterOfT<Error>).trigger(data.error);
                 break;
             case 'alphaSynth.output.addSamples':
+                if (data.playbackGeneration !== this._outputPlaybackGeneration) { break; }
                 this._output.addSamples(data.samples, data.isFinal);
                 break;
-            case 'alphaSynth.output.play':
+            case 'alphaSynth.output.play': {
+                this._outputPlaybackGeneration = data.playbackGeneration;
+                const output = this._output as ISynthOutput & {
+                    configurePlaybackTransport?: (generation: number | undefined, buffer: SharedSampleBufferDescriptor | undefined) => void;
+                };
+                output.configurePlaybackTransport?.(data.playbackGeneration, data.sharedSampleBuffer);
                 this._output.play();
                 break;
+            }
             case 'alphaSynth.output.pause':
                 this._output.pause();
                 break;
@@ -693,13 +701,15 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
     // output communication ( output -> worker )
     public onOutputSampleRequest(): void {
         this._synth.postMessage({
-            cmd: 'alphaSynth.output.sampleRequest'
+            cmd: 'alphaSynth.output.sampleRequest',
+            playbackGeneration: this._outputPlaybackGeneration
         });
     }
     public onOutputSamplesPlayed(samples: number): void {
         this._synth.postMessage({
             cmd: 'alphaSynth.output.samplesPlayed',
-            samples: samples
+            samples: samples,
+            playbackGeneration: this._outputPlaybackGeneration
         });
     }
 

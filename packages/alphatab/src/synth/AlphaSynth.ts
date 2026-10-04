@@ -412,6 +412,8 @@ export class AlphaSynthBase implements IAlphaSynth {
         this.sequencer.startCountIn();
         this.synthesizer.setupMetronomeChannel(this.sequencer.metronomeChannel, this._countInVolume);
         this.updateTimePosition(0, true);
+        this._notPlayedSamples = 0;
+        this._resetOutputSamples();
         this.output.play();
     }
 
@@ -463,6 +465,11 @@ export class AlphaSynthBase implements IAlphaSynth {
         // Web Audio outputs discard queued audio when paused. Rewind synthesis to the
         // last frame that actually reached the speakers so resume cannot skip ahead.
         this._notPlayedSamples = 0;
+        if (this.sequencer.isPlayingCountIn) {
+            const seekPending = this.sequencer.hasPendingMainSeek;
+            this.sequencer.resetCountIn();
+            this._timePosition = seekPending ? this.sequencer.currentTime : this._currentPosition.currentTime;
+        }
         if (this.sequencer.isPlayingMain) {
             this.sequencer.mainSeek(this._timePosition);
             this.updateTimePosition(this._timePosition, true);
