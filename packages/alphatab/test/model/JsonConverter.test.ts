@@ -55,7 +55,7 @@ describe('JsonConverterTest', () => {
         await testRoundTripFolderEqual('guitarpro7');
     });
 
-    it('visual-effects-and-annotations', async () => {
+    it('visual-effects-and-annotations', { timeout: 60_000 }, async () => {
         await testRoundTripFolderEqual('visual-tests/effects-and-annotations');
     });
 

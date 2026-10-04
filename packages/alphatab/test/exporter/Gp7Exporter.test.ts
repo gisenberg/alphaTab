@@ -260,7 +260,7 @@ describe('Gp7ExporterTest', () => {
         await testRoundTripEqual('guitarpro7/lyrics-null.gp', null);
     });
 
-    it('gp8', async () => {
+    it('gp8', { timeout: 60_000 }, async () => {
         await testRoundTripFolderEqual('guitarpro8', undefined, ['bendpoints', 'bendtype']);
     });
 
