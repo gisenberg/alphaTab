@@ -2292,13 +2292,15 @@ export class AlphaTabApiBase<TSettings> {
      * @param tick
      * @param stop
      * @param shouldScroll whether we should scroll to the bar (if scrolling is active)
+     * @param playerState the player state the update describes, captured before any deferral
      */
     private _cursorUpdateTick(
         tick: number,
         stop: boolean,
         cursorSpeed: number,
         shouldScroll: boolean = false,
-        forceUpdate: boolean = false
+        forceUpdate: boolean = false,
+        playerState: PlayerState = this._player.state
     ): void {
         this._previousTick = tick;
 
@@ -2315,7 +2317,8 @@ export class AlphaTabApiBase<TSettings> {
                     stop,
                     shouldScroll,
                     cursorSpeed,
-                    forceUpdate || this.playerState === PlayerState.Paused
+                    forceUpdate || playerState === PlayerState.Paused,
+                    playerState
                 );
             }
         }
@@ -2329,7 +2332,8 @@ export class AlphaTabApiBase<TSettings> {
         stop: boolean,
         shouldScroll: boolean,
         cursorSpeed: number,
-        forceUpdate: boolean = false
+        forceUpdate: boolean = false,
+        playerState: PlayerState = this._player.state
     ): void {
         const beat: Beat = lookupResult.beat;
         if (!beat) {
@@ -2346,7 +2350,7 @@ export class AlphaTabApiBase<TSettings> {
             !forceUpdate &&
             beat === previousBeat?.beat &&
             cache === previousCache &&
-            previousState === this._player.state &&
+            previousState === playerState &&
             previousBeat?.start === lookupResult.start
         ) {
             return;
@@ -2361,7 +2365,7 @@ export class AlphaTabApiBase<TSettings> {
         // actually show the cursor
         this._currentBeat = lookupResult;
         this._previousCursorCache = cache;
-        this._previousStateForCursor = this._player.state;
+        this._previousStateForCursor = playerState;
 
         this.uiFacade.beginInvoke(() => {
             this._internalCursorUpdateBeat(
@@ -2371,7 +2375,8 @@ export class AlphaTabApiBase<TSettings> {
                 beatBoundings!,
                 shouldScroll,
                 cursorSpeed,
-                forceUpdate
+                forceUpdate,
+                playerState
             );
         });
     }
@@ -2398,7 +2403,8 @@ export class AlphaTabApiBase<TSettings> {
         beatBoundings: BeatBounds,
         shouldScroll: boolean,
         cursorSpeed: number,
-        forceUpdate: boolean
+        forceUpdate: boolean,
+        playerState: PlayerState
     ) {
         const beat = lookupResult.beat;
         const nextBeat = lookupResult.nextBeat?.beat;
@@ -2420,7 +2426,7 @@ export class AlphaTabApiBase<TSettings> {
             cursorHandler.placeBarCursor(barCursor, beatBoundings);
         }
 
-        const isPlayingUpdate = this._player.state === PlayerState.Playing && !stop;
+        const isPlayingUpdate = playerState === PlayerState.Playing && !stop;
 
         let nextBeatX: number = beatBoundings.realBounds.x + beatBoundings.realBounds.w;
         let nextBeatBoundings: BeatBounds | null = null;
@@ -4112,9 +4118,13 @@ export class AlphaTabApiBase<TSettings> {
             return;
         }
 
+        // The cursor follows the state the position was reported in. Pausing seeks to the
+        // current beat; resuming before that deferred update runs must not animate it
+        // through a count-in, which owns the transport without moving the song position.
+        const playerState = this._player.state;
         this.uiFacade.beginInvoke(() => {
             const cursorSpeed = e.modifiedTempo / e.originalTempo;
-            this._cursorUpdateTick(e.currentTick, false, cursorSpeed, false, e.isSeek);
+            this._cursorUpdateTick(e.currentTick, false, cursorSpeed, false, e.isSeek, playerState);
         });
 
         this.uiFacade.triggerEvent(this.container, 'playerPositionChanged', e);
