@@ -497,10 +497,12 @@ export class AlphaSynthBase implements IAlphaSynth {
         this._resetReleaseTail();
         this.sequencer.stop();
         this.synthesizer.noteOffAll(true);
-        this.tickPosition = this.sequencer.mainPlaybackRange ? this.sequencer.mainPlaybackRange.startTick : 0;
+        // Announce the stop before the rewind, as pause() does, so listeners place the
+        // rewound position as a stopped one instead of animating it as playback.
         (this.stateChanged as EventEmitterOfT<PlayerStateChangedEventArgs>).trigger(
             new PlayerStateChangedEventArgs(this.state, true)
         );
+        this.tickPosition = this.sequencer.mainPlaybackRange ? this.sequencer.mainPlaybackRange.startTick : 0;
     }
 
     public playOneTimeMidiFile(midi: MidiFile): void {

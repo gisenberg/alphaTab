@@ -117,6 +117,40 @@ describe('AlphaSynthTests', () => {
         synth.pause();
     });
 
+    it('announces a stop before rewinding to the selection start', async () => {
+        const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 4 4 :4 C4 D4 E4 F4 | G4 A4 B4 C5');
+        const midi = new MidiFile();
+        new MidiFileGenerator(score, null, new AlphaSynthMidiFileHandler(midi)).generate();
+        const output = new BufferedTestOutput(false);
+        const synth = new AlphaSynth(output, 500);
+        synth.loadSoundFont(await TestPlatform.loadFile('test-data/audio/default.sf2'), false);
+        synth.loadMidiFile(midi);
+        const range = new PlaybackRange();
+        range.startTick = synth.loadedMidiInfo!.endTick / 2;
+        range.endTick = synth.loadedMidiInfo!.endTick;
+        synth.playbackRange = range;
+        synth.play();
+        for (let request = 0; request < 10; request++) {
+            output.next();
+            output.consumeNext();
+        }
+        // A main-thread cursor sees events in this order; a rewind reported before the
+        // stop would be drawn as playback moving on from the selection start.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const events: { kind: 'stopped' | 'position'; tick?: number }[] = [];
+        synth.stateChanged.on(e => {
+            if (e.stopped) {
+                events.push({ kind: 'stopped' });
+            }
+        });
+        synth.positionChanged.on(e => events.push({ kind: 'position', tick: e.currentTick }));
+        synth.stop();
+        const stoppedAt = events.findIndex(e => e.kind === 'stopped');
+        const rewoundAt = events.findIndex(e => e.kind === 'position' && Math.abs(e.tick! - range.startTick) <= 1);
+        expect(stoppedAt).toBeGreaterThanOrEqual(0);
+        expect(rewoundAt).toBeGreaterThan(stoppedAt);
+    });
+
     it('returns to the selected song position when pausing a count-in and disabling it', async () => {
         const score = ScoreLoader.loadAlphaTex('\\tempo 120 . \\ts 4 4 :4 C4 D4 E4 F4 | G4 A4 B4 C5');
         const midi = new MidiFile();
